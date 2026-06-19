@@ -1,0 +1,51 @@
+{
+  "kind": "collectionType",
+  "collectionName": "publications",
+  "info": {
+    "singularName": "publication",
+    "pluralName": "publications",
+    "displayName": "Publicación",
+    "description": "Revista de la Edad de Plata española"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "titulo": {
+      "type": "string",
+      "required": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "titulo",
+      "required": true
+    },
+    "descripcion": {
+      "type": "blocks"
+    },
+    "imagen_portada": {
+      "type": "media",
+      "multiple": false,
+      "allowedTypes": ["images"]
+    },
+    "año_inicio": {
+      "type": "integer"
+    },
+    "año_fin": {
+      "type": "integer"
+    },
+    "lugar_publicacion": {
+      "type": "string"
+    },
+    "notas": {
+      "type": "text"
+    },
+    "issues": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::issue.issue",
+      "mappedBy": "publication"
+    }
+  }
+}

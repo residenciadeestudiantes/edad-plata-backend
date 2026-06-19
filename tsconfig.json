@@ -33,6 +33,8 @@
     ".cache/",
     ".tmp/",
     ".strapi/",
+    // Do not include the Next.js frontend nested in this directory
+    "frontend/",
 
     // Do not include admin files in the server compilation
     "src/admin/",

@@ -1,0 +1,50 @@
+{
+  "kind": "collectionType",
+  "collectionName": "issues",
+  "info": {
+    "singularName": "issue",
+    "pluralName": "issues",
+    "displayName": "Número",
+    "description": "Número de una revista de la Edad de Plata española"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "titulo": {
+      "type": "string"
+    },
+    "numero_orden": {
+      "type": "integer"
+    },
+    "mes": {
+      "type": "integer",
+      "min": 1,
+      "max": 12
+    },
+    "año": {
+      "type": "integer"
+    },
+    "imagen_portada": {
+      "type": "media",
+      "multiple": false,
+      "allowedTypes": ["images"]
+    },
+    "url_facsimil": {
+      "type": "string"
+    },
+    "publication": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::publication.publication",
+      "inversedBy": "issues"
+    },
+    "articles": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::article.article",
+      "mappedBy": "issue"
+    }
+  }
+}
