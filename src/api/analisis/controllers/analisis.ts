@@ -23,7 +23,7 @@ interface Concordancia {
   autores: string[];
   revista: string;
   numeroOrden: number | null;
-  anio: number | null;
+  año: number | null;
   fragmento: string;
   enTitulo: boolean;
 }
@@ -128,6 +128,8 @@ export default {
         porRevista: [],
         porAutor: [],
         porAño: [],
+        por_año: [],
+        por_autor_burbuja: [],
         concordancias: [],
       });
     }
@@ -225,7 +227,7 @@ export default {
           autores: authorNames,
           revista: row.revista_titulo,
           numeroOrden: row.numero_orden,
-          anio: row.anio,
+          año: row.anio,
           fragmento: row.articulo_titulo,
           enTitulo: true,
         });
@@ -243,7 +245,7 @@ export default {
           autores: authorNames,
           revista: row.revista_titulo,
           numeroOrden: row.numero_orden,
-          anio: row.anio,
+          año: row.anio,
           fragmento,
           enTitulo: false,
         });
@@ -276,6 +278,24 @@ export default {
       }))
       .sort((a, b) => b.ocurrencias - a.ocurrencias);
 
+    // Para el gráfico de línea temporal: mismos datos que porAño, pero en
+    // orden cronológico y sin el desglose de artículos (no lo necesita Plotly).
+    const por_año = [...porAñoMap.values()]
+      .map((entry) => ({
+        año: entry.año,
+        ocurrencias: entry.ocurrencias,
+      }))
+      .sort((a, b) => a.año - b.año);
+
+    // Para el gráfico de burbujas: mismos datos que porAutor, con los nombres
+    // de campo que espera el componente de Plotly del frontend.
+    const por_autor_burbuja = porAutor.map((entry) => ({
+      autor: entry.autor,
+      autor_slug: entry.slug,
+      ocurrencias: entry.ocurrencias,
+      num_articulos: entry.articulos,
+    }));
+
     return ctx.send({
       palabra,
       totalOcurrencias,
@@ -283,6 +303,8 @@ export default {
       porRevista,
       porAutor,
       porAño,
+      por_año,
+      por_autor_burbuja,
       concordancias,
     });
   },
