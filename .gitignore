@@ -129,3 +129,8 @@ dist
 build
 .strapi-updater.json
 .strapi-cloud.json
+
+# Strapi regenera estos tipos en cada arranque de `strapi develop`/`build`.
+# Mantenerlos en git provoca conflictos/corrupción cuando dos procesos
+# `strapi develop` escriben a la vez (p. ej. al cambiar de rama).
+types/generated
