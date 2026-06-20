@@ -519,6 +519,72 @@ export default {
       interpretacion: interpretarDistancia(distanciaCoseno),
     });
   },
+
+  // PROTOTIPO DE VALIDACIÓN: datos hardcodeados para demostración visual.
+  // En producción este endpoint calculará el centroide TF-IDF del corpus completo
+  // y la distancia anual de cada autor al centroide, mediante microservicio FastAPI + scikit-learn.
+  async innovacion(ctx: Context) {
+    return ctx.send({
+      es_prototipo: true,
+      nota: 'Datos de demostración. No corresponden a autores reales del corpus.',
+      centroide_año_inicio: 1920,
+      centroide_año_fin: 1936,
+      autores: [
+        {
+          nombre: 'Federico García Lorca',
+          color: '#DA3C00',
+          trayectoria: [
+            { año: 1920, distancia: 0.41 },
+            { año: 1922, distancia: 0.38 },
+            { año: 1924, distancia: 0.52 },
+            { año: 1926, distancia: 0.61 },
+            { año: 1928, distancia: 0.74 },
+            { año: 1930, distancia: 0.82 },
+            { año: 1933, distancia: 0.89 },
+          ],
+        },
+        {
+          nombre: 'Ramón Gómez de la Serna',
+          color: '#3838BD',
+          trayectoria: [
+            { año: 1920, distancia: 0.71 },
+            { año: 1922, distancia: 0.68 },
+            { año: 1924, distancia: 0.73 },
+            { año: 1926, distancia: 0.75 },
+            { año: 1928, distancia: 0.72 },
+            { año: 1930, distancia: 0.78 },
+            { año: 1933, distancia: 0.80 },
+          ],
+        },
+        {
+          nombre: 'José Ortega y Gasset',
+          color: '#008867',
+          trayectoria: [
+            { año: 1920, distancia: 0.22 },
+            { año: 1922, distancia: 0.19 },
+            { año: 1924, distancia: 0.24 },
+            { año: 1926, distancia: 0.21 },
+            { año: 1928, distancia: 0.26 },
+            { año: 1930, distancia: 0.23 },
+            { año: 1933, distancia: 0.28 },
+          ],
+        },
+        {
+          nombre: 'Juan Ramón Jiménez',
+          color: '#DD158B',
+          trayectoria: [
+            { año: 1920, distancia: 0.33 },
+            { año: 1922, distancia: 0.29 },
+            { año: 1924, distancia: 0.44 },
+            { año: 1926, distancia: 0.58 },
+            { año: 1928, distancia: 0.63 },
+            { año: 1930, distancia: 0.71 },
+            { año: 1933, distancia: 0.69 },
+          ],
+        },
+      ],
+    });
+  },
 };
 
 // Alias explícito para dejar claro en el código que el texto plano conserva
