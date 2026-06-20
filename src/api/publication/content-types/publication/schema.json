@@ -41,6 +41,9 @@
     "notas": {
       "type": "text"
     },
+    "metadatos_marc21": {
+      "type": "text"
+    },
     "issues": {
       "type": "relation",
       "relation": "oneToMany",
