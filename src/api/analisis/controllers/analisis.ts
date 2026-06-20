@@ -1,3 +1,7 @@
+// PROTOTIPO: cálculo TF-IDF implementado en Node.js para validación.
+// En producción, este endpoint delegará en un microservicio FastAPI + scikit-learn
+// que expone la misma interfaz JSON. El frontend no requerirá cambios.
+
 import type { Context } from 'koa';
 
 interface ArticleRow {
@@ -62,6 +66,110 @@ function htmlToPlainText(html: string | null): string {
 
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+// Stopwords del español para el análisis estilométrico (TF-IDF). A diferencia
+// de `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
+// tildes: la tokenización de este endpoint no pliega diacríticos.
+const STOPWORDS = new Set([
+  'de', 'la', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un',
+  'para', 'con', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le',
+  'ya', 'o', 'este', 'sí', 'porque', 'esta', 'entre', 'cuando', 'muy', 'sin',
+  'sobre', 'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo',
+  'nos', 'durante', 'estados', 'todos', 'uno', 'les', 'ni', 'contra',
+]);
+
+// Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
+// letras Unicode), separado por espacios y sin stopwords.
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 0 && !STOPWORDS.has(token));
+}
+
+interface EstilometriaAuthorRow {
+  slug: string;
+  nombre: string;
+}
+
+interface EstilometriaArticleRow {
+  texto: string | null;
+}
+
+type TfIdfVector = Map<string, number>;
+
+function buildTfIdf(
+  tokensByDoc: string[][],
+  vocabulario: string[]
+): TfIdfVector[] {
+  const N = tokensByDoc.length;
+
+  const documentFrequency = new Map<string, number>();
+  for (const palabra of vocabulario) {
+    let df = 0;
+    for (const tokens of tokensByDoc) {
+      if (tokens.includes(palabra)) df += 1;
+    }
+    documentFrequency.set(palabra, df);
+  }
+
+  return tokensByDoc.map((tokens) => {
+    const vector: TfIdfVector = new Map();
+    const totalPalabras = tokens.length;
+
+    const counts = new Map<string, number>();
+    for (const token of tokens) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+
+    for (const palabra of vocabulario) {
+      const count = counts.get(palabra) ?? 0;
+      if (count === 0 || totalPalabras === 0) {
+        vector.set(palabra, 0);
+        continue;
+      }
+      const tf = count / totalPalabras;
+      const df = documentFrequency.get(palabra) ?? 0;
+      // IDF suavizado (igual que scikit-learn con smooth_idf=True):
+      // ln((1+N)/(1+df)) + 1. Con N=2 documentos, la fórmula clásica
+      // ln(N/df) anula a 0 cualquier palabra presente en ambos documentos
+      // (df=2 → ln(1)=0), lo que hace que la similitud de coseno sea
+      // siempre 0 sin importar el solapamiento real de vocabulario. La
+      // suavización evita esa degeneración.
+      const idf = Math.log((1 + N) / (1 + df)) + 1;
+      vector.set(palabra, tf * idf);
+    }
+
+    return vector;
+  });
+}
+
+function cosineSimilarity(a: TfIdfVector, b: TfIdfVector, vocabulario: string[]): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (const palabra of vocabulario) {
+    const valA = a.get(palabra) ?? 0;
+    const valB = b.get(palabra) ?? 0;
+    dot += valA * valB;
+    normA += valA * valA;
+    normB += valB * valB;
+  }
+
+  if (normA === 0 || normB === 0) return 0;
+
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function interpretarDistancia(distancia: number): string {
+  if (distancia < 0.2) return 'muy similar';
+  if (distancia < 0.4) return 'similar';
+  if (distancia < 0.6) return 'moderadamente distinto';
+  if (distancia < 0.8) return 'distinto';
+  return 'muy distinto';
 }
 
 export default {
@@ -306,6 +414,109 @@ export default {
       por_año,
       por_autor_burbuja,
       concordancias,
+    });
+  },
+
+  async estilometria(ctx: Context) {
+    const autor1Slug = typeof ctx.query.autor1 === 'string' ? ctx.query.autor1.trim() : '';
+    const autor2Slug = typeof ctx.query.autor2 === 'string' ? ctx.query.autor2.trim() : '';
+
+    if (!autor1Slug || !autor2Slug) {
+      return ctx.badRequest('Los parámetros "autor1" y "autor2" son obligatorios.');
+    }
+
+    if (autor1Slug === autor2Slug) {
+      return ctx.badRequest('"autor1" y "autor2" deben ser autores distintos.');
+    }
+
+    const knex = strapi.db.connection;
+
+    async function cargarAutor(slug: string) {
+      const author: EstilometriaAuthorRow | undefined = await knex('authors as au')
+        .where('au.slug', slug)
+        .andWhere('au.published_at', 'is not', null)
+        .select('au.slug as slug', 'au.nombre as nombre')
+        .first();
+
+      if (!author) return null;
+
+      const articleRows: EstilometriaArticleRow[] = await knex('articles_authors_lnk as aal')
+        .innerJoin('articles as a', 'a.id', 'aal.article_id')
+        .innerJoin('authors as au', 'au.id', 'aal.author_id')
+        .where('au.slug', slug)
+        .andWhere('au.published_at', 'is not', null)
+        .andWhere('a.published_at', 'is not', null)
+        .select('a.texto as texto');
+
+      return { author, articleRows };
+    }
+
+    const [autor1Data, autor2Data] = await Promise.all([
+      cargarAutor(autor1Slug),
+      cargarAutor(autor2Slug),
+    ]);
+
+    if (!autor1Data) {
+      return ctx.notFound(`No se ha encontrado el autor "${autor1Slug}".`);
+    }
+    if (!autor2Data) {
+      return ctx.notFound(`No se ha encontrado el autor "${autor2Slug}".`);
+    }
+
+    const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
+    const texto2 = autor2Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
+
+    const tokens1 = tokenize(texto1);
+    const tokens2 = tokenize(texto2);
+
+    if (tokens1.length === 0) {
+      return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene texto suficiente para el análisis.`);
+    }
+    if (tokens2.length === 0) {
+      return ctx.badRequest(`El autor "${autor2Data.author.nombre}" no tiene texto suficiente para el análisis.`);
+    }
+
+    const vocabulario = [...new Set([...tokens1, ...tokens2])];
+
+    const [vector1, vector2] = buildTfIdf([tokens1, tokens2], vocabulario);
+
+    const similitudCoseno = cosineSimilarity(vector1, vector2, vocabulario);
+    const distanciaCoseno = 1 - similitudCoseno;
+
+    const diferencias = vocabulario.map((palabra) => {
+      const peso1 = vector1.get(palabra) ?? 0;
+      const peso2 = vector2.get(palabra) ?? 0;
+      return { palabra, diferencia: peso1 - peso2, peso1, peso2 };
+    });
+
+    const palabrasAutor1 = [...diferencias]
+      .sort((a, b) => b.diferencia - a.diferencia)
+      .slice(0, 10)
+      .map((entry) => ({ palabra: entry.palabra, peso: entry.peso1 }));
+
+    const palabrasAutor2 = [...diferencias]
+      .sort((a, b) => a.diferencia - b.diferencia)
+      .slice(0, 10)
+      .map((entry) => ({ palabra: entry.palabra, peso: entry.peso2 }));
+
+    return ctx.send({
+      autor1: {
+        slug: autor1Data.author.slug,
+        nombre: autor1Data.author.nombre,
+        num_articulos: autor1Data.articleRows.length,
+      },
+      autor2: {
+        slug: autor2Data.author.slug,
+        nombre: autor2Data.author.nombre,
+        num_articulos: autor2Data.articleRows.length,
+      },
+      distancia_coseno: distanciaCoseno,
+      similitud_coseno: similitudCoseno,
+      palabras_caracteristicas: {
+        autor1: palabrasAutor1,
+        autor2: palabrasAutor2,
+      },
+      interpretacion: interpretarDistancia(distanciaCoseno),
     });
   },
 };
