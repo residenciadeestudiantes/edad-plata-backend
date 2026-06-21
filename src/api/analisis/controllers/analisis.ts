@@ -165,6 +165,36 @@ function interpretarDistancia(distancia: number): string {
   return 'muy distinto';
 }
 
+// Por debajo de esta frecuencia, la distribución de sucesores/predecesores
+// de una palabra tiene tan pocas muestras que su entropía no es
+// estadísticamente fiable (un par de ocurrencias sueltas puede parecer
+// "muy variado" sin serlo realmente).
+const FRECUENCIA_MINIMA_CADENAS = 20;
+
+interface InterpretacionEntropia {
+  nivel: 'insuficiente' | 'convencional' | 'moderado' | 'variado' | 'innovador';
+  texto: string;
+  fiable: boolean;
+}
+
+// Interpreta la entropía normalizada (0-1 respecto al máximo teórico para el
+// número de sucesores observados) en una etiqueta legible. Si la frecuencia
+// de la palabra no alcanza FRECUENCIA_MINIMA_CADENAS, la entropía no se
+// considera fiable independientemente de su valor.
+function interpretarEntropia(normalizada: number, fiable: boolean): InterpretacionEntropia {
+  if (!fiable) {
+    return {
+      nivel: 'insuficiente',
+      texto: 'Frecuencia insuficiente para análisis fiable',
+      fiable: false,
+    };
+  }
+  if (normalizada < 0.3) return { nivel: 'convencional', texto: 'Uso muy convencional', fiable: true };
+  if (normalizada < 0.5) return { nivel: 'moderado', texto: 'Uso moderadamente predecible', fiable: true };
+  if (normalizada < 0.7) return { nivel: 'variado', texto: 'Uso variado', fiable: true };
+  return { nivel: 'innovador', texto: 'Uso innovador', fiable: true };
+}
+
 export default {
   async concordancias(ctx: Context) {
     const palabra = ctx.query.palabra;
@@ -685,6 +715,17 @@ export default {
     );
     const entropiaCorpus = bigramas.calcularEntropiaShannon(sucesoresCorpus);
 
+    const frecuenciaCorpus = indice.frecuenciasCorpus.get(palabraNorm) ?? 0;
+    const fiableCorpus = frecuenciaCorpus >= FRECUENCIA_MINIMA_CADENAS;
+    // Entropía máxima teórica para el número de sucesores observados (una
+    // distribución uniforme entre N opciones tiene entropía log2(N); con 0 o
+    // 1 sucesor no hay variedad posible que medir, así que se usa 1 para no
+    // dividir por cero sin que ello implique nada sobre la fiabilidad).
+    const entropiaMaximaCorpus =
+      sucesoresCorpus.length > 1 ? Math.log2(sucesoresCorpus.length) : 1;
+    const entropiaNormalizadaCorpus =
+      entropiaMaximaCorpus > 0 ? entropiaCorpus / entropiaMaximaCorpus : 0;
+
     let datosAutor: Record<string, unknown> | null = null;
     if (autorSlug) {
       const indiceAutor = indice.indiceAutores.get(autorSlug);
@@ -703,6 +744,13 @@ export default {
         );
         const entropiaAutor = bigramas.calcularEntropiaShannon(sucesoresAutor);
 
+        const frecuenciaAutor = frecuenciasAutor.get(palabraNorm) ?? 0;
+        const fiableAutor = frecuenciaAutor >= FRECUENCIA_MINIMA_CADENAS;
+        const entropiaMaximaAutor =
+          sucesoresAutor.length > 1 ? Math.log2(sucesoresAutor.length) : 1;
+        const entropiaNormalizadaAutor =
+          entropiaMaximaAutor > 0 ? entropiaAutor / entropiaMaximaAutor : 0;
+
         const mapaCorpus = new Map(sucesoresCorpus.map((s) => [s.token, s.probabilidad]));
         const sucesoresConDesviacion = sucesoresAutor.map((s) => ({
           ...s,
@@ -716,7 +764,12 @@ export default {
           predecesores: predecesoresAutor,
           entropia: entropiaAutor,
           desviacionEntropia: entropiaAutor - entropiaCorpus,
-          frecuenciaTotal: frecuenciasAutor.get(palabraNorm) ?? 0,
+          frecuenciaTotal: frecuenciaAutor,
+          fiable: fiableAutor,
+          frecuenciaMinima: FRECUENCIA_MINIMA_CADENAS,
+          entropiaNormalizada: entropiaNormalizadaAutor,
+          entropiaMaxima: entropiaMaximaAutor,
+          interpretacion: interpretarEntropia(entropiaNormalizadaAutor, fiableAutor),
         };
       } else {
         datosAutor = { slug: autorSlug, sinDatos: true };
@@ -729,7 +782,12 @@ export default {
         sucesores: sucesoresCorpus,
         predecesores: predecesoresCorpus,
         entropia: entropiaCorpus,
-        frecuenciaTotal: indice.frecuenciasCorpus.get(palabraNorm) ?? 0,
+        frecuenciaTotal: frecuenciaCorpus,
+        fiable: fiableCorpus,
+        frecuenciaMinima: FRECUENCIA_MINIMA_CADENAS,
+        entropiaNormalizada: entropiaNormalizadaCorpus,
+        entropiaMaxima: entropiaMaximaCorpus,
+        interpretacion: interpretarEntropia(entropiaNormalizadaCorpus, fiableCorpus),
       },
       autor: datosAutor,
       metadatos: {
