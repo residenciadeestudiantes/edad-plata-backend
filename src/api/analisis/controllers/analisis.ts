@@ -112,13 +112,15 @@ const STOPWORDS = new Set([
 ]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
-// letras Unicode), separado por espacios y sin stopwords.
-function tokenize(text: string): string[] {
+// letras Unicode), separado por espacios. Por defecto descarta las
+// stopwords (palabras funcionales); `incluirFuncionales` permite
+// conservarlas para quien quiera analizar el corpus sin ese filtro.
+function tokenize(text: string, incluirFuncionales = false): string[] {
   return text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
-    .filter((token) => token.length > 0 && !STOPWORDS.has(token));
+    .filter((token) => token.length > 0 && (incluirFuncionales || !STOPWORDS.has(token)));
 }
 
 interface EstilometriaAuthorRow {
@@ -461,6 +463,8 @@ export default {
       return ctx.badRequest('"autor1" y "autor2" deben ser autores distintos.');
     }
 
+    const incluirFuncionales = ctx.query.incluirFuncionales === 'true';
+
     const knex = strapi.db.connection;
 
     async function cargarAutor(slug: string) {
@@ -498,8 +502,8 @@ export default {
     const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
     const texto2 = autor2Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
 
-    const tokens1 = tokenize(texto1);
-    const tokens2 = tokenize(texto2);
+    const tokens1 = tokenize(texto1, incluirFuncionales);
+    const tokens2 = tokenize(texto2, incluirFuncionales);
 
     if (tokens1.length === 0) {
       return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene texto suficiente para el análisis.`);
