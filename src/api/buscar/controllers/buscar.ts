@@ -3,6 +3,10 @@
 // palabra suelta con límites de palabra \b). Devuelve un resultado por
 // artículo (no por ocurrencia), con un único fragmento de contexto, en el
 // formato {data, meta} que espera la página /buscar del frontend.
+//
+// Búsqueda avanzada (booleana): admite encadenar hasta 3 palabras con
+// operadores Y/O/NO entre la 1ª-2ª y la 2ª-3ª (q, op1+q2, op2+q3),
+// evaluados de izquierda a derecha sin precedencia.
 
 import type { Context } from 'koa';
 
@@ -47,13 +51,65 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+type Operador = 'AND' | 'OR' | 'NOT';
+
+function esOperadorValido(value: string): value is Operador {
+  return value === 'AND' || value === 'OR' || value === 'NOT';
+}
+
+function combinar(a: boolean, operador: Operador, b: boolean): boolean {
+  if (operador === 'AND') return a && b;
+  if (operador === 'OR') return a || b;
+  return a && !b; // NOT: a debe darse, b no debe darse
+}
+
+// Construye el fragmento de contexto a partir del primer término (en orden
+// de prioridad) que efectivamente aparece en el cuerpo del artículo. Si
+// ninguno aparece en el cuerpo (p. ej. solo coincide en el título, o el
+// término que hizo match fue uno excluido con NOT), usa el título como
+// fragmento, igual que en la búsqueda simple de un solo término.
+function construirFragmento(
+  plainText: string,
+  normalizedText: string,
+  terminosPrioridad: { original: string; normalizado: string }[],
+  tituloOriginal: string
+): string {
+  for (const termino of terminosPrioridad) {
+    const index = normalizedText.indexOf(termino.normalizado);
+    if (index === -1) continue;
+
+    const start = Math.max(0, index - CONTEXT_CHARS);
+    const end = Math.min(plainText.length, index + termino.original.length + CONTEXT_CHARS);
+    const antes = collapseWhitespace(plainText.slice(start, index));
+    const coincidencia = plainText.slice(index, index + termino.original.length);
+    const despues = collapseWhitespace(plainText.slice(index + termino.original.length, end));
+    return `${antes} **${coincidencia}** ${despues}`.trim();
+  }
+
+  return tituloOriginal;
+}
+
 export default {
   async texto(ctx: Context) {
-    const frase = typeof ctx.query.q === 'string' ? ctx.query.q.trim() : '';
+    const palabra1 = typeof ctx.query.q === 'string' ? ctx.query.q.trim() : '';
 
-    if (frase.length < 3) {
+    if (palabra1.length < 3) {
       return ctx.badRequest('El parámetro "q" debe tener al menos 3 caracteres.');
     }
+
+    const operador1Raw = typeof ctx.query.op1 === 'string' ? ctx.query.op1.trim().toUpperCase() : '';
+    const palabra2 = typeof ctx.query.q2 === 'string' ? ctx.query.q2.trim() : '';
+    const operador2Raw = typeof ctx.query.op2 === 'string' ? ctx.query.op2.trim().toUpperCase() : '';
+    const palabra3 = typeof ctx.query.q3 === 'string' ? ctx.query.q3.trim() : '';
+
+    // Una condición solo se aplica si tiene operador válido Y su palabra
+    // asociada (con el mínimo de caracteres); en otro caso se ignora en
+    // silencio en vez de dar error, para tolerar estados intermedios del
+    // formulario.
+    const usaCondicion1 = esOperadorValido(operador1Raw) && palabra2.length >= 3;
+    const operador1 = usaCondicion1 ? (operador1Raw as Operador) : null;
+    const usaCondicion2 = usaCondicion1 && esOperadorValido(operador2Raw) && palabra3.length >= 3;
+    const operador2 = usaCondicion2 ? (operador2Raw as Operador) : null;
 
     const page = Math.max(1, Number(ctx.query.page) || 1);
     const pageSize = Math.max(1, Number(ctx.query.pageSize) || 20);
@@ -127,7 +183,17 @@ export default {
       authorsByArticle.set(row.article_id, list);
     }
 
-    const normalizedFrase = stripDiacritics(frase).toLowerCase();
+    const normalizada1 = stripDiacritics(palabra1).toLowerCase();
+    const normalizada2 = usaCondicion1 ? stripDiacritics(palabra2).toLowerCase() : '';
+    const normalizada3 = usaCondicion2 ? stripDiacritics(palabra3).toLowerCase() : '';
+
+    // Orden de prioridad para elegir qué término mostrar como fragmento de
+    // contexto: el primero de la cadena que de verdad aparece en el cuerpo.
+    const terminosPrioridad = [
+      { original: palabra1, normalizado: normalizada1 },
+      ...(usaCondicion1 ? [{ original: palabra2, normalizado: normalizada2 }] : []),
+      ...(usaCondicion2 ? [{ original: palabra3, normalizado: normalizada3 }] : []),
+    ];
 
     const resultados: {
       id: number;
@@ -146,22 +212,25 @@ export default {
       const normalizedText = stripDiacritics(plainText).toLowerCase();
       const normalizedTitulo = stripDiacritics(row.articulo_titulo ?? '').toLowerCase();
 
-      const matchIndex = normalizedText.indexOf(normalizedFrase);
-      const matchEnTitulo = normalizedTitulo.includes(normalizedFrase);
+      const contieneTermino = (normalizado: string) =>
+        normalizedText.includes(normalizado) || normalizedTitulo.includes(normalizado);
 
-      if (matchIndex === -1 && !matchEnTitulo) continue;
-
-      let fragmento: string;
-      if (matchIndex !== -1) {
-        const start = Math.max(0, matchIndex - CONTEXT_CHARS);
-        const end = Math.min(plainText.length, matchIndex + frase.length + CONTEXT_CHARS);
-        const antes = collapseWhitespace(plainText.slice(start, matchIndex));
-        const coincidencia = plainText.slice(matchIndex, matchIndex + frase.length);
-        const despues = collapseWhitespace(plainText.slice(matchIndex + frase.length, end));
-        fragmento = `${antes} **${coincidencia}** ${despues}`.trim();
-      } else {
-        fragmento = row.articulo_titulo;
+      let coincide = contieneTermino(normalizada1);
+      if (usaCondicion1 && operador1) {
+        coincide = combinar(coincide, operador1, contieneTermino(normalizada2));
       }
+      if (usaCondicion2 && operador2) {
+        coincide = combinar(coincide, operador2, contieneTermino(normalizada3));
+      }
+
+      if (!coincide) continue;
+
+      const fragmento = construirFragmento(
+        plainText,
+        normalizedText,
+        terminosPrioridad,
+        row.articulo_titulo
+      );
 
       resultados.push({
         id: row.article_id,
