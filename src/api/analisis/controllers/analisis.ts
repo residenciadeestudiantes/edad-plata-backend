@@ -3,6 +3,8 @@
 // que expone la misma interfaz JSON. El frontend no requerirá cambios.
 
 import type { Context } from 'koa';
+import * as bigramas from '../services/bigramas';
+import { STOPWORDS } from '../services/stopwords';
 
 interface ArticleRow {
   article_id: number;
@@ -67,49 +69,6 @@ function htmlToPlainText(html: string | null): string {
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
-
-// Stopwords del español para el análisis estilométrico (TF-IDF): artículos,
-// pronombres (personales, posesivos, demostrativos, relativos e
-// indefinidos), preposiciones y conjunciones. Se excluyen deliberadamente
-// del cálculo porque son palabras gramaticales de uso casi universal que no
-// caracterizan el estilo de un autor concreto. A diferencia de
-// `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
-// tildes: la tokenización de este endpoint no pliega diacríticos.
-const STOPWORDS = new Set([
-  // Artículos
-  'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'lo',
-  // Pronombres personales (sujeto, objeto, preposicionales)
-  'yo', 'tú', 'tu', 'vos', 'él', 'ella', 'ello', 'nosotros', 'nosotras',
-  'vosotros', 'vosotras', 'ellos', 'ellas', 'usted', 'ustedes', 'me', 'te',
-  'se', 'nos', 'os', 'le', 'les', 'mí', 'ti', 'sí', 'conmigo', 'contigo',
-  'consigo',
-  // Pronombres y determinantes posesivos
-  'mi', 'mis', 'tus', 'su', 'sus', 'nuestro', 'nuestra', 'nuestros',
-  'nuestras', 'vuestro', 'vuestra', 'vuestros', 'vuestras', 'mío', 'mía',
-  'míos', 'mías', 'tuyo', 'tuya', 'tuyos', 'tuyas', 'suyo', 'suya', 'suyos',
-  'suyas',
-  // Demostrativos
-  'este', 'esta', 'estos', 'estas', 'esto', 'ese', 'esa', 'esos', 'esas',
-  'eso', 'aquel', 'aquella', 'aquellos', 'aquellas', 'aquello',
-  // Relativos e interrogativos
-  'que', 'quien', 'quienes', 'cual', 'cuales', 'cuyo', 'cuya', 'cuyos',
-  'cuyas', 'donde', 'cuando', 'como', 'cuanto', 'cuanta', 'cuantos',
-  'cuantas',
-  // Indefinidos
-  'alguien', 'algo', 'nadie', 'nada', 'alguno', 'alguna', 'algunos',
-  'algunas', 'ninguno', 'ninguna', 'ningunos', 'ningunas', 'cualquier',
-  'cualquiera', 'todo', 'toda', 'todos', 'todas', 'otro', 'otra', 'otros',
-  'otras', 'mismo', 'misma', 'mismos', 'mismas', 'tal', 'tales', 'cada',
-  'varios', 'varias', 'uno', 'unos', 'unas',
-  // Preposiciones
-  'a', 'ante', 'bajo', 'cabe', 'con', 'contra', 'de', 'desde', 'en',
-  'entre', 'hacia', 'hasta', 'para', 'por', 'según', 'sin', 'sobre', 'tras',
-  'durante', 'mediante', 'excepto', 'salvo', 'al', 'del',
-  // Conjunciones y adverbios funcionales
-  'y', 'e', 'ni', 'o', 'u', 'pero', 'mas', 'sino', 'aunque', 'porque',
-  'pues', 'si', 'ya', 'muy', 'más', 'menos', 'también', 'tampoco', 'no',
-  'tan', 'tanto', 'hay',
-]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
 // letras Unicode), separado por espacios. Por defecto descarta las
@@ -686,6 +645,98 @@ export default {
             : null,
       },
       autores: autoresResultado,
+    });
+  },
+
+  // Cadenas léxicas: probabilidad de que una palabra vaya seguida/precedida
+  // de otra en el corpus (y, opcionalmente, en los textos de un autor
+  // concreto), con su entropía de Shannon como medida de variedad de uso.
+  // El índice de bigramas se construye bajo demanda y se cachea en memoria
+  // (ver services/bigramas.ts).
+  async cadenasLexicas(ctx: Context) {
+    const palabraRaw = typeof ctx.query.palabra === 'string' ? ctx.query.palabra : '';
+    const autorSlug = typeof ctx.query.autorSlug === 'string' ? ctx.query.autorSlug.trim() : '';
+    const reconstruir = ctx.query.reconstruir === 'true';
+
+    if (!palabraRaw || palabraRaw.trim().length < 2) {
+      return ctx.badRequest('Se requiere una palabra de al menos 2 caracteres.');
+    }
+
+    if (!bigramas.obtenerIndice() || reconstruir) {
+      await bigramas.construirIndice(strapi);
+    }
+
+    const indice = bigramas.obtenerIndice();
+    if (!indice) {
+      return ctx.internalServerError('No se ha podido construir el índice léxico.');
+    }
+
+    const palabraNorm = palabraRaw.toLowerCase().trim();
+
+    const sucesoresCorpus = bigramas.calcularProbabilidades(
+      indice.indiceCorpus,
+      indice.frecuenciasCorpus,
+      palabraNorm
+    );
+    const predecesoresCorpus = bigramas.calcularProbabilidades(
+      indice.indicePredecesores,
+      indice.frecuenciasCorpus,
+      palabraNorm
+    );
+    const entropiaCorpus = bigramas.calcularEntropiaShannon(sucesoresCorpus);
+
+    let datosAutor: Record<string, unknown> | null = null;
+    if (autorSlug) {
+      const indiceAutor = indice.indiceAutores.get(autorSlug);
+      const frecuenciasAutor = indice.frecuenciasAutor.get(autorSlug);
+
+      if (indiceAutor && frecuenciasAutor) {
+        const sucesoresAutor = bigramas.calcularProbabilidades(
+          indiceAutor,
+          frecuenciasAutor,
+          palabraNorm
+        );
+        const predecesoresAutor = bigramas.calcularProbabilidades(
+          indice.indicePredecesoresAutores.get(autorSlug) ?? new Map(),
+          frecuenciasAutor,
+          palabraNorm
+        );
+        const entropiaAutor = bigramas.calcularEntropiaShannon(sucesoresAutor);
+
+        const mapaCorpus = new Map(sucesoresCorpus.map((s) => [s.token, s.probabilidad]));
+        const sucesoresConDesviacion = sucesoresAutor.map((s) => ({
+          ...s,
+          probabilidadCorpus: mapaCorpus.get(s.token) ?? 0,
+          desviacion: s.probabilidad - (mapaCorpus.get(s.token) ?? 0),
+        }));
+
+        datosAutor = {
+          slug: autorSlug,
+          sucesores: sucesoresConDesviacion,
+          predecesores: predecesoresAutor,
+          entropia: entropiaAutor,
+          desviacionEntropia: entropiaAutor - entropiaCorpus,
+          frecuenciaTotal: frecuenciasAutor.get(palabraNorm) ?? 0,
+        };
+      } else {
+        datosAutor = { slug: autorSlug, sinDatos: true };
+      }
+    }
+
+    return ctx.send({
+      palabra: palabraNorm,
+      corpus: {
+        sucesores: sucesoresCorpus,
+        predecesores: predecesoresCorpus,
+        entropia: entropiaCorpus,
+        frecuenciaTotal: indice.frecuenciasCorpus.get(palabraNorm) ?? 0,
+      },
+      autor: datosAutor,
+      metadatos: {
+        fechaConstruccionIndice: bigramas.obtenerFechaConstruccion(),
+        totalArticulos: indice.totalArticulos,
+        totalTokens: indice.totalTokens,
+      },
     });
   },
 };
