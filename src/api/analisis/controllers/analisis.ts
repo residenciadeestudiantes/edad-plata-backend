@@ -556,69 +556,136 @@ export default {
     });
   },
 
-  // PROTOTIPO DE VALIDACIÓN: datos hardcodeados para demostración visual.
-  // En producción este endpoint calculará el centroide TF-IDF del corpus completo
-  // y la distancia anual de cada autor al centroide, mediante microservicio FastAPI + scikit-learn.
+  // Deriva estilística de 1 a 4 autores respecto a la norma del corpus (el
+  // centroide TF-IDF de TODOS los autores con artículos publicados). Para
+  // cada autor seleccionado, cada punto de la trayectoria es un "documento"
+  // TF-IDF con sus artículos de un año concreto, comparado por distancia de
+  // coseno contra el centroide de la norma.
   async innovacion(ctx: Context) {
+    const autoresParam = typeof ctx.query.autores === 'string' ? ctx.query.autores : '';
+    const slugs = [...new Set(autoresParam.split(',').map((s) => s.trim()).filter(Boolean))];
+
+    if (slugs.length === 0) {
+      return ctx.badRequest('El parámetro "autores" es obligatorio (de 1 a 4 slugs separados por comas).');
+    }
+    if (slugs.length > 4) {
+      return ctx.badRequest('Selecciona como máximo 4 autores.');
+    }
+
+    const knex = strapi.db.connection;
+
+    const rows: { autor_slug: string; autor_nombre: string; texto: string | null; anio: number | null }[] =
+      await knex('articles as a')
+        .innerJoin('articles_authors_lnk as aal', 'aal.article_id', 'a.id')
+        .innerJoin('authors as au', 'au.id', 'aal.author_id')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .where('a.published_at', 'is not', null)
+        .andWhere('au.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .select(
+          'au.slug as autor_slug',
+          'au.nombre as autor_nombre',
+          'a.texto as texto',
+          'i.ano as anio'
+        );
+
+    const nombrePorSlug = new Map<string, string>();
+    for (const row of rows) {
+      nombrePorSlug.set(row.autor_slug, row.autor_nombre);
+    }
+
+    for (const slug of slugs) {
+      if (!nombrePorSlug.has(slug)) {
+        return ctx.notFound(`No se ha encontrado el autor "${slug}" (o no tiene artículos publicados).`);
+      }
+    }
+
+    // --- Norma: centroide TF-IDF de todo el corpus (todos los autores) ---
+    const tokensNorma = tokenize(rows.map((row) => htmlToPlainText(row.texto)).join(' '));
+    const autoresEnNorma = new Set(rows.map((row) => row.autor_slug)).size;
+
+    // --- Un "documento" TF-IDF por cada (autor, año) de los seleccionados ---
+    interface PuntoPendiente {
+      slug: string;
+      anio: number;
+      tokens: string[];
+      numArticulos: number;
+    }
+    const puntosPorAutorAño = new Map<string, PuntoPendiente>();
+    const totalArticulosPorAutor = new Map<string, number>();
+
+    for (const row of rows) {
+      if (!slugs.includes(row.autor_slug)) continue;
+
+      totalArticulosPorAutor.set(
+        row.autor_slug,
+        (totalArticulosPorAutor.get(row.autor_slug) ?? 0) + 1
+      );
+
+      if (row.anio === null) continue;
+
+      const clave = `${row.autor_slug}::${row.anio}`;
+      const punto = puntosPorAutorAño.get(clave) ?? {
+        slug: row.autor_slug,
+        anio: row.anio,
+        tokens: [],
+        numArticulos: 0,
+      };
+      punto.tokens.push(...tokenize(htmlToPlainText(row.texto)));
+      punto.numArticulos += 1;
+      puntosPorAutorAño.set(clave, punto);
+    }
+
+    const puntos = [...puntosPorAutorAño.values()]
+      .filter((punto) => punto.tokens.length > 0)
+      .sort((a, b) => a.anio - b.anio);
+
+    const documentos = [tokensNorma, ...puntos.map((punto) => punto.tokens)];
+    const vocabulario = [...new Set(documentos.flat())];
+    const vectores = buildTfIdf(documentos, vocabulario);
+    const vectorNorma = vectores[0];
+
+    const UMBRAL_ARTICULOS_AUTOR = 3;
+    const UMBRAL_ARTICULOS_NORMA = 20;
+    const COLORES_AUTORES = ['#DA3C00', '#3838BD', '#008867', '#DD158B'];
+
+    const autoresResultado = slugs.map((slug, index) => {
+      const nombre = nombrePorSlug.get(slug) as string;
+      const numArticulos = totalArticulosPorAutor.get(slug) ?? 0;
+
+      const trayectoria = puntos
+        .map((punto, i) => ({ punto, vector: vectores[i + 1] }))
+        .filter(({ punto }) => punto.slug === slug)
+        .map(({ punto, vector }) => ({
+          año: punto.anio,
+          distancia: 1 - cosineSimilarity(vector, vectorNorma, vocabulario),
+          num_articulos: punto.numArticulos,
+        }));
+
+      return {
+        slug,
+        nombre,
+        color: COLORES_AUTORES[index % COLORES_AUTORES.length],
+        num_articulos: numArticulos,
+        aviso_pocos_datos:
+          numArticulos < UMBRAL_ARTICULOS_AUTOR
+            ? `El cálculo de ${nombre} se ha hecho con ${numArticulos} artículo${numArticulos === 1 ? '' : 's'} y puede no ser representativo.`
+            : null,
+        trayectoria,
+      };
+    });
+
     return ctx.send({
-      es_prototipo: true,
-      nota: 'Datos de demostración. No corresponden a autores reales del corpus.',
-      centroide_año_inicio: 1920,
-      centroide_año_fin: 1936,
-      autores: [
-        {
-          nombre: 'Federico García Lorca',
-          color: '#DA3C00',
-          trayectoria: [
-            { año: 1920, distancia: 0.41 },
-            { año: 1922, distancia: 0.38 },
-            { año: 1924, distancia: 0.52 },
-            { año: 1926, distancia: 0.61 },
-            { año: 1928, distancia: 0.74 },
-            { año: 1930, distancia: 0.82 },
-            { año: 1933, distancia: 0.89 },
-          ],
-        },
-        {
-          nombre: 'Ramón Gómez de la Serna',
-          color: '#3838BD',
-          trayectoria: [
-            { año: 1920, distancia: 0.71 },
-            { año: 1922, distancia: 0.68 },
-            { año: 1924, distancia: 0.73 },
-            { año: 1926, distancia: 0.75 },
-            { año: 1928, distancia: 0.72 },
-            { año: 1930, distancia: 0.78 },
-            { año: 1933, distancia: 0.80 },
-          ],
-        },
-        {
-          nombre: 'José Ortega y Gasset',
-          color: '#008867',
-          trayectoria: [
-            { año: 1920, distancia: 0.22 },
-            { año: 1922, distancia: 0.19 },
-            { año: 1924, distancia: 0.24 },
-            { año: 1926, distancia: 0.21 },
-            { año: 1928, distancia: 0.26 },
-            { año: 1930, distancia: 0.23 },
-            { año: 1933, distancia: 0.28 },
-          ],
-        },
-        {
-          nombre: 'Juan Ramón Jiménez',
-          color: '#DD158B',
-          trayectoria: [
-            { año: 1920, distancia: 0.33 },
-            { año: 1922, distancia: 0.29 },
-            { año: 1924, distancia: 0.44 },
-            { año: 1926, distancia: 0.58 },
-            { año: 1928, distancia: 0.63 },
-            { año: 1930, distancia: 0.71 },
-            { año: 1933, distancia: 0.69 },
-          ],
-        },
-      ],
+      norma: {
+        num_autores: autoresEnNorma,
+        num_articulos: rows.length,
+        aviso_pocos_datos:
+          rows.length < UMBRAL_ARTICULOS_NORMA
+            ? `El cálculo de la norma se ha hecho con ${rows.length} artículo${rows.length === 1 ? '' : 's'} de ${autoresEnNorma} autor${autoresEnNorma === 1 ? '' : 'es'} y puede no ser representativo.`
+            : null,
+      },
+      autores: autoresResultado,
     });
   },
 };
