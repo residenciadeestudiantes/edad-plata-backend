@@ -68,25 +68,59 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-// Stopwords del español para el análisis estilométrico (TF-IDF). A diferencia
-// de `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
+// Stopwords del español para el análisis estilométrico (TF-IDF): artículos,
+// pronombres (personales, posesivos, demostrativos, relativos e
+// indefinidos), preposiciones y conjunciones. Se excluyen deliberadamente
+// del cálculo porque son palabras gramaticales de uso casi universal que no
+// caracterizan el estilo de un autor concreto. A diferencia de
+// `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
 // tildes: la tokenización de este endpoint no pliega diacríticos.
 const STOPWORDS = new Set([
-  'de', 'la', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un',
-  'para', 'con', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le',
-  'ya', 'o', 'este', 'sí', 'porque', 'esta', 'entre', 'cuando', 'muy', 'sin',
-  'sobre', 'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo',
-  'nos', 'durante', 'estados', 'todos', 'uno', 'les', 'ni', 'contra',
+  // Artículos
+  'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'lo',
+  // Pronombres personales (sujeto, objeto, preposicionales)
+  'yo', 'tú', 'tu', 'vos', 'él', 'ella', 'ello', 'nosotros', 'nosotras',
+  'vosotros', 'vosotras', 'ellos', 'ellas', 'usted', 'ustedes', 'me', 'te',
+  'se', 'nos', 'os', 'le', 'les', 'mí', 'ti', 'sí', 'conmigo', 'contigo',
+  'consigo',
+  // Pronombres y determinantes posesivos
+  'mi', 'mis', 'tus', 'su', 'sus', 'nuestro', 'nuestra', 'nuestros',
+  'nuestras', 'vuestro', 'vuestra', 'vuestros', 'vuestras', 'mío', 'mía',
+  'míos', 'mías', 'tuyo', 'tuya', 'tuyos', 'tuyas', 'suyo', 'suya', 'suyos',
+  'suyas',
+  // Demostrativos
+  'este', 'esta', 'estos', 'estas', 'esto', 'ese', 'esa', 'esos', 'esas',
+  'eso', 'aquel', 'aquella', 'aquellos', 'aquellas', 'aquello',
+  // Relativos e interrogativos
+  'que', 'quien', 'quienes', 'cual', 'cuales', 'cuyo', 'cuya', 'cuyos',
+  'cuyas', 'donde', 'cuando', 'como', 'cuanto', 'cuanta', 'cuantos',
+  'cuantas',
+  // Indefinidos
+  'alguien', 'algo', 'nadie', 'nada', 'alguno', 'alguna', 'algunos',
+  'algunas', 'ninguno', 'ninguna', 'ningunos', 'ningunas', 'cualquier',
+  'cualquiera', 'todo', 'toda', 'todos', 'todas', 'otro', 'otra', 'otros',
+  'otras', 'mismo', 'misma', 'mismos', 'mismas', 'tal', 'tales', 'cada',
+  'varios', 'varias', 'uno', 'unos', 'unas',
+  // Preposiciones
+  'a', 'ante', 'bajo', 'cabe', 'con', 'contra', 'de', 'desde', 'en',
+  'entre', 'hacia', 'hasta', 'para', 'por', 'según', 'sin', 'sobre', 'tras',
+  'durante', 'mediante', 'excepto', 'salvo', 'al', 'del',
+  // Conjunciones y adverbios funcionales
+  'y', 'e', 'ni', 'o', 'u', 'pero', 'mas', 'sino', 'aunque', 'porque',
+  'pues', 'si', 'ya', 'muy', 'más', 'menos', 'también', 'tampoco', 'no',
+  'tan', 'tanto', 'hay',
 ]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
-// letras Unicode), separado por espacios y sin stopwords.
-function tokenize(text: string): string[] {
+// letras Unicode), separado por espacios. Por defecto descarta las
+// stopwords (palabras funcionales); `incluirFuncionales` permite
+// conservarlas para quien quiera analizar el corpus sin ese filtro.
+function tokenize(text: string, incluirFuncionales = false): string[] {
   return text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
-    .filter((token) => token.length > 0 && !STOPWORDS.has(token));
+    .filter((token) => token.length > 0 && (incluirFuncionales || !STOPWORDS.has(token)));
 }
 
 interface EstilometriaAuthorRow {
@@ -429,6 +463,8 @@ export default {
       return ctx.badRequest('"autor1" y "autor2" deben ser autores distintos.');
     }
 
+    const incluirFuncionales = ctx.query.incluirFuncionales === 'true';
+
     const knex = strapi.db.connection;
 
     async function cargarAutor(slug: string) {
@@ -466,8 +502,8 @@ export default {
     const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
     const texto2 = autor2Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
 
-    const tokens1 = tokenize(texto1);
-    const tokens2 = tokenize(texto2);
+    const tokens1 = tokenize(texto1, incluirFuncionales);
+    const tokens2 = tokenize(texto2, incluirFuncionales);
 
     if (tokens1.length === 0) {
       return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene texto suficiente para el análisis.`);
