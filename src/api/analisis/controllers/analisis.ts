@@ -3,6 +3,8 @@
 // que expone la misma interfaz JSON. El frontend no requerirá cambios.
 
 import type { Context } from 'koa';
+import * as bigramas from '../services/bigramas';
+import { STOPWORDS } from '../services/stopwords';
 
 interface ArticleRow {
   article_id: number;
@@ -67,49 +69,6 @@ function htmlToPlainText(html: string | null): string {
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
-
-// Stopwords del español para el análisis estilométrico (TF-IDF): artículos,
-// pronombres (personales, posesivos, demostrativos, relativos e
-// indefinidos), preposiciones y conjunciones. Se excluyen deliberadamente
-// del cálculo porque son palabras gramaticales de uso casi universal que no
-// caracterizan el estilo de un autor concreto. A diferencia de
-// `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
-// tildes: la tokenización de este endpoint no pliega diacríticos.
-const STOPWORDS = new Set([
-  // Artículos
-  'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'lo',
-  // Pronombres personales (sujeto, objeto, preposicionales)
-  'yo', 'tú', 'tu', 'vos', 'él', 'ella', 'ello', 'nosotros', 'nosotras',
-  'vosotros', 'vosotras', 'ellos', 'ellas', 'usted', 'ustedes', 'me', 'te',
-  'se', 'nos', 'os', 'le', 'les', 'mí', 'ti', 'sí', 'conmigo', 'contigo',
-  'consigo',
-  // Pronombres y determinantes posesivos
-  'mi', 'mis', 'tus', 'su', 'sus', 'nuestro', 'nuestra', 'nuestros',
-  'nuestras', 'vuestro', 'vuestra', 'vuestros', 'vuestras', 'mío', 'mía',
-  'míos', 'mías', 'tuyo', 'tuya', 'tuyos', 'tuyas', 'suyo', 'suya', 'suyos',
-  'suyas',
-  // Demostrativos
-  'este', 'esta', 'estos', 'estas', 'esto', 'ese', 'esa', 'esos', 'esas',
-  'eso', 'aquel', 'aquella', 'aquellos', 'aquellas', 'aquello',
-  // Relativos e interrogativos
-  'que', 'quien', 'quienes', 'cual', 'cuales', 'cuyo', 'cuya', 'cuyos',
-  'cuyas', 'donde', 'cuando', 'como', 'cuanto', 'cuanta', 'cuantos',
-  'cuantas',
-  // Indefinidos
-  'alguien', 'algo', 'nadie', 'nada', 'alguno', 'alguna', 'algunos',
-  'algunas', 'ninguno', 'ninguna', 'ningunos', 'ningunas', 'cualquier',
-  'cualquiera', 'todo', 'toda', 'todos', 'todas', 'otro', 'otra', 'otros',
-  'otras', 'mismo', 'misma', 'mismos', 'mismas', 'tal', 'tales', 'cada',
-  'varios', 'varias', 'uno', 'unos', 'unas',
-  // Preposiciones
-  'a', 'ante', 'bajo', 'cabe', 'con', 'contra', 'de', 'desde', 'en',
-  'entre', 'hacia', 'hasta', 'para', 'por', 'según', 'sin', 'sobre', 'tras',
-  'durante', 'mediante', 'excepto', 'salvo', 'al', 'del',
-  // Conjunciones y adverbios funcionales
-  'y', 'e', 'ni', 'o', 'u', 'pero', 'mas', 'sino', 'aunque', 'porque',
-  'pues', 'si', 'ya', 'muy', 'más', 'menos', 'también', 'tampoco', 'no',
-  'tan', 'tanto', 'hay',
-]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
 // letras Unicode), separado por espacios. Por defecto descarta las
@@ -204,6 +163,36 @@ function interpretarDistancia(distancia: number): string {
   if (distancia < 0.6) return 'moderadamente distinto';
   if (distancia < 0.8) return 'distinto';
   return 'muy distinto';
+}
+
+// Por debajo de esta frecuencia, la distribución de sucesores/predecesores
+// de una palabra tiene tan pocas muestras que su entropía no es
+// estadísticamente fiable (un par de ocurrencias sueltas puede parecer
+// "muy variado" sin serlo realmente).
+const FRECUENCIA_MINIMA_CADENAS = 20;
+
+interface InterpretacionEntropia {
+  nivel: 'insuficiente' | 'convencional' | 'moderado' | 'variado' | 'innovador';
+  texto: string;
+  fiable: boolean;
+}
+
+// Interpreta la entropía normalizada (0-1 respecto al máximo teórico para el
+// número de sucesores observados) en una etiqueta legible. Si la frecuencia
+// de la palabra no alcanza FRECUENCIA_MINIMA_CADENAS, la entropía no se
+// considera fiable independientemente de su valor.
+function interpretarEntropia(normalizada: number, fiable: boolean): InterpretacionEntropia {
+  if (!fiable) {
+    return {
+      nivel: 'insuficiente',
+      texto: 'Frecuencia insuficiente para análisis fiable',
+      fiable: false,
+    };
+  }
+  if (normalizada < 0.3) return { nivel: 'convencional', texto: 'Uso muy convencional', fiable: true };
+  if (normalizada < 0.5) return { nivel: 'moderado', texto: 'Uso moderadamente predecible', fiable: true };
+  if (normalizada < 0.7) return { nivel: 'variado', texto: 'Uso variado', fiable: true };
+  return { nivel: 'innovador', texto: 'Uso innovador', fiable: true };
 }
 
 export default {
@@ -686,6 +675,126 @@ export default {
             : null,
       },
       autores: autoresResultado,
+    });
+  },
+
+  // Cadenas léxicas: probabilidad de que una palabra vaya seguida/precedida
+  // de otra en el corpus (y, opcionalmente, en los textos de un autor
+  // concreto), con su entropía de Shannon como medida de variedad de uso.
+  // El índice de bigramas se construye bajo demanda y se cachea en memoria
+  // (ver services/bigramas.ts).
+  async cadenasLexicas(ctx: Context) {
+    const palabraRaw = typeof ctx.query.palabra === 'string' ? ctx.query.palabra : '';
+    const autorSlug = typeof ctx.query.autorSlug === 'string' ? ctx.query.autorSlug.trim() : '';
+    const reconstruir = ctx.query.reconstruir === 'true';
+
+    if (!palabraRaw || palabraRaw.trim().length < 2) {
+      return ctx.badRequest('Se requiere una palabra de al menos 2 caracteres.');
+    }
+
+    if (!bigramas.obtenerIndice() || reconstruir) {
+      await bigramas.construirIndice(strapi);
+    }
+
+    const indice = bigramas.obtenerIndice();
+    if (!indice) {
+      return ctx.internalServerError('No se ha podido construir el índice léxico.');
+    }
+
+    const palabraNorm = palabraRaw.toLowerCase().trim();
+
+    const sucesoresCorpus = bigramas.calcularProbabilidades(
+      indice.indiceCorpus,
+      indice.frecuenciasCorpus,
+      palabraNorm
+    );
+    const predecesoresCorpus = bigramas.calcularProbabilidades(
+      indice.indicePredecesores,
+      indice.frecuenciasCorpus,
+      palabraNorm
+    );
+    const entropiaCorpus = bigramas.calcularEntropiaShannon(sucesoresCorpus);
+
+    const frecuenciaCorpus = indice.frecuenciasCorpus.get(palabraNorm) ?? 0;
+    const fiableCorpus = frecuenciaCorpus >= FRECUENCIA_MINIMA_CADENAS;
+    // Entropía máxima teórica para el número de sucesores observados (una
+    // distribución uniforme entre N opciones tiene entropía log2(N); con 0 o
+    // 1 sucesor no hay variedad posible que medir, así que se usa 1 para no
+    // dividir por cero sin que ello implique nada sobre la fiabilidad).
+    const entropiaMaximaCorpus =
+      sucesoresCorpus.length > 1 ? Math.log2(sucesoresCorpus.length) : 1;
+    const entropiaNormalizadaCorpus =
+      entropiaMaximaCorpus > 0 ? entropiaCorpus / entropiaMaximaCorpus : 0;
+
+    let datosAutor: Record<string, unknown> | null = null;
+    if (autorSlug) {
+      const indiceAutor = indice.indiceAutores.get(autorSlug);
+      const frecuenciasAutor = indice.frecuenciasAutor.get(autorSlug);
+
+      if (indiceAutor && frecuenciasAutor) {
+        const sucesoresAutor = bigramas.calcularProbabilidades(
+          indiceAutor,
+          frecuenciasAutor,
+          palabraNorm
+        );
+        const predecesoresAutor = bigramas.calcularProbabilidades(
+          indice.indicePredecesoresAutores.get(autorSlug) ?? new Map(),
+          frecuenciasAutor,
+          palabraNorm
+        );
+        const entropiaAutor = bigramas.calcularEntropiaShannon(sucesoresAutor);
+
+        const frecuenciaAutor = frecuenciasAutor.get(palabraNorm) ?? 0;
+        const fiableAutor = frecuenciaAutor >= FRECUENCIA_MINIMA_CADENAS;
+        const entropiaMaximaAutor =
+          sucesoresAutor.length > 1 ? Math.log2(sucesoresAutor.length) : 1;
+        const entropiaNormalizadaAutor =
+          entropiaMaximaAutor > 0 ? entropiaAutor / entropiaMaximaAutor : 0;
+
+        const mapaCorpus = new Map(sucesoresCorpus.map((s) => [s.token, s.probabilidad]));
+        const sucesoresConDesviacion = sucesoresAutor.map((s) => ({
+          ...s,
+          probabilidadCorpus: mapaCorpus.get(s.token) ?? 0,
+          desviacion: s.probabilidad - (mapaCorpus.get(s.token) ?? 0),
+        }));
+
+        datosAutor = {
+          slug: autorSlug,
+          sucesores: sucesoresConDesviacion,
+          predecesores: predecesoresAutor,
+          entropia: entropiaAutor,
+          desviacionEntropia: entropiaAutor - entropiaCorpus,
+          frecuenciaTotal: frecuenciaAutor,
+          fiable: fiableAutor,
+          frecuenciaMinima: FRECUENCIA_MINIMA_CADENAS,
+          entropiaNormalizada: entropiaNormalizadaAutor,
+          entropiaMaxima: entropiaMaximaAutor,
+          interpretacion: interpretarEntropia(entropiaNormalizadaAutor, fiableAutor),
+        };
+      } else {
+        datosAutor = { slug: autorSlug, sinDatos: true };
+      }
+    }
+
+    return ctx.send({
+      palabra: palabraNorm,
+      corpus: {
+        sucesores: sucesoresCorpus,
+        predecesores: predecesoresCorpus,
+        entropia: entropiaCorpus,
+        frecuenciaTotal: frecuenciaCorpus,
+        fiable: fiableCorpus,
+        frecuenciaMinima: FRECUENCIA_MINIMA_CADENAS,
+        entropiaNormalizada: entropiaNormalizadaCorpus,
+        entropiaMaxima: entropiaMaximaCorpus,
+        interpretacion: interpretarEntropia(entropiaNormalizadaCorpus, fiableCorpus),
+      },
+      autor: datosAutor,
+      metadatos: {
+        fechaConstruccionIndice: bigramas.obtenerFechaConstruccion(),
+        totalArticulos: indice.totalArticulos,
+        totalTokens: indice.totalTokens,
+      },
     });
   },
 };
