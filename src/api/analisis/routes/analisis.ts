@@ -18,5 +18,11 @@ export default {
       handler: 'analisis.innovacion',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/analisis/cadenas-lexicas',
+      handler: 'analisis.cadenasLexicas',
+      config: { auth: false },
+    },
   ],
 };
