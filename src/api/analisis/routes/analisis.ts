@@ -24,5 +24,11 @@ export default {
       handler: 'analisis.cadenasLexicas',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/analisis/nube-palabras-autor',
+      handler: 'analisis.nubePalabrasAutor',
+      config: { auth: false },
+    },
   ],
 };
