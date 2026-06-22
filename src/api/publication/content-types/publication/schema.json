@@ -38,6 +38,12 @@
     "lugar_publicacion": {
       "type": "string"
     },
+    "latitud": {
+      "type": "decimal"
+    },
+    "longitud": {
+      "type": "decimal"
+    },
     "notas": {
       "type": "text"
     },
