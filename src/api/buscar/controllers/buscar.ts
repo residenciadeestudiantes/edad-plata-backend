@@ -114,6 +114,16 @@ export default {
     const page = Math.max(1, Number(ctx.query.page) || 1);
     const pageSize = Math.max(1, Number(ctx.query.pageSize) || 20);
 
+    // Ámbito de la búsqueda: por defecto se busca en ambos (compatibilidad
+    // con peticiones que no envíen estos parámetros). Si se envía "false"
+    // explícitamente, ese ámbito se excluye.
+    const buscarEnTituloAutor = ctx.query.enTituloAutor !== 'false';
+    const buscarEnTexto = ctx.query.enTexto !== 'false';
+
+    if (!buscarEnTituloAutor && !buscarEnTexto) {
+      return ctx.badRequest('Selecciona al menos un ámbito de búsqueda (título/autor o texto).');
+    }
+
     const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
     const autorSlug = typeof ctx.query.autor === 'string' ? ctx.query.autor.trim() : '';
     const desdeRaw = typeof ctx.query.desde === 'string' ? ctx.query.desde.trim() : '';
@@ -211,9 +221,20 @@ export default {
       const plainText = htmlToPlainText(row.texto);
       const normalizedText = stripDiacritics(plainText).toLowerCase();
       const normalizedTitulo = stripDiacritics(row.articulo_titulo ?? '').toLowerCase();
+      const autoresNormalizados = (authorsByArticle.get(row.article_id) ?? []).map((nombre) =>
+        stripDiacritics(nombre).toLowerCase()
+      );
 
-      const contieneTermino = (normalizado: string) =>
-        normalizedText.includes(normalizado) || normalizedTitulo.includes(normalizado);
+      // El ámbito (título/autor, texto del artículo, o ambos) decide en qué
+      // campos se busca el término; ver checkboxes del formulario avanzado.
+      const contieneTermino = (normalizado: string) => {
+        const enTexto = buscarEnTexto && normalizedText.includes(normalizado);
+        const enTituloOAutor =
+          buscarEnTituloAutor &&
+          (normalizedTitulo.includes(normalizado) ||
+            autoresNormalizados.some((autor) => autor.includes(normalizado)));
+        return enTexto || enTituloOAutor;
+      };
 
       let coincide = contieneTermino(normalizada1);
       if (usaCondicion1 && operador1) {
