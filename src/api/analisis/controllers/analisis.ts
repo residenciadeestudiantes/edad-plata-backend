@@ -567,6 +567,98 @@ export default {
     });
   },
 
+  // Nube de palabras de todo el corpus de un autor (página de autor), con
+  // posibilidad de acotarla además a una sola revista para comparar ambas
+  // nubes lado a lado. Se calcula a demanda (no en la carga de la página)
+  // porque recorre el texto completo de todos los artículos del autor.
+  async nubePalabrasAutor(ctx: Context) {
+    const autorSlug = typeof ctx.query.autor === 'string' ? ctx.query.autor.trim() : '';
+
+    if (!autorSlug) {
+      return ctx.badRequest('El parámetro "autor" es obligatorio.');
+    }
+
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    const incluirFuncionales = ctx.query.incluirFuncionales === 'true';
+
+    const knex = strapi.db.connection;
+
+    const author: EstilometriaAuthorRow | undefined = await knex('authors as au')
+      .where('au.slug', autorSlug)
+      .andWhere('au.published_at', 'is not', null)
+      .select('au.slug as slug', 'au.nombre as nombre')
+      .first();
+
+    if (!author) {
+      return ctx.notFound(`No se ha encontrado el autor "${autorSlug}".`);
+    }
+
+    const articleRows: EstilometriaArticleRow[] = await knex('articles_authors_lnk as aal')
+      .innerJoin('articles as a', 'a.id', 'aal.article_id')
+      .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .where('au.slug', autorSlug)
+      .andWhere('au.published_at', 'is not', null)
+      .andWhere('a.published_at', 'is not', null)
+      .select('a.texto as texto');
+
+    const textoCompleto = articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
+    const tokensCompleto = tokenize(textoCompleto, incluirFuncionales);
+
+    let revista: {
+      slug: string;
+      titulo: string;
+      num_articulos: number;
+      palabras: { text: string; value: number }[];
+    } | null = null;
+
+    if (revistaSlug) {
+      const publication: { slug: string; titulo: string } | undefined = await knex('publications as p')
+        .where('p.slug', revistaSlug)
+        .andWhere('p.published_at', 'is not', null)
+        .select('p.slug as slug', 'p.titulo as titulo')
+        .first();
+
+      if (!publication) {
+        return ctx.notFound(`No se ha encontrado la revista "${revistaSlug}".`);
+      }
+
+      const articleRowsRevista: EstilometriaArticleRow[] = await knex('articles_authors_lnk as aal')
+        .innerJoin('articles as a', 'a.id', 'aal.article_id')
+        .innerJoin('authors as au', 'au.id', 'aal.author_id')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+        .where('au.slug', autorSlug)
+        .andWhere('p.slug', revistaSlug)
+        .andWhere('au.published_at', 'is not', null)
+        .andWhere('a.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .andWhere('p.published_at', 'is not', null)
+        .select('a.texto as texto');
+
+      const textoRevista = articleRowsRevista.map((row) => htmlToPlainText(row.texto)).join(' ');
+      const tokensRevista = tokenize(textoRevista, incluirFuncionales);
+
+      revista = {
+        slug: publication.slug,
+        titulo: publication.titulo,
+        num_articulos: articleRowsRevista.length,
+        palabras: contarFrecuencias(tokensRevista),
+      };
+    }
+
+    return ctx.send({
+      autor: {
+        slug: author.slug,
+        nombre: author.nombre,
+        num_articulos: articleRows.length,
+      },
+      corpus_completo: contarFrecuencias(tokensCompleto),
+      revista,
+    });
+  },
+
   // Deriva estilística de 1 a 4 autores respecto a la norma del corpus (el
   // centroide TF-IDF de TODOS los autores con artículos publicados). Para
   // cada autor seleccionado, cada punto de la trayectoria es un "documento"
