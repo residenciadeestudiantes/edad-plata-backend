@@ -165,6 +165,24 @@ function interpretarDistancia(distancia: number): string {
   return 'muy distinto';
 }
 
+// Cuántas palabras (como máximo) se devuelven por autor para la nube de
+// palabras comparativa: a diferencia de las "palabras características"
+// (que usan el peso TF-IDF diferencial frente al otro autor), aquí se usa
+// la frecuencia absoluta dentro del propio corpus del autor.
+const PALABRAS_NUBE = 80;
+
+function contarFrecuencias(tokens: string[], top = PALABRAS_NUBE): { text: string; value: number }[] {
+  const conteo = new Map<string, number>();
+  for (const token of tokens) {
+    conteo.set(token, (conteo.get(token) ?? 0) + 1);
+  }
+
+  return [...conteo.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, top)
+    .map(([text, value]) => ({ text, value }));
+}
+
 // Por debajo de esta frecuencia, la distribución de sucesores/predecesores
 // de una palabra tiene tan pocas muestras que su entropía no es
 // estadísticamente fiable (un par de ocurrencias sueltas puede parecer
@@ -540,6 +558,10 @@ export default {
       palabras_caracteristicas: {
         autor1: palabrasAutor1,
         autor2: palabrasAutor2,
+      },
+      nube_palabras: {
+        autor1: contarFrecuencias(tokens1),
+        autor2: contarFrecuencias(tokens2),
       },
       interpretacion: interpretarDistancia(distanciaCoseno),
     });
