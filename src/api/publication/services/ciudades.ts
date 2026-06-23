@@ -56,6 +56,7 @@ const COORDENADAS_CIUDADES: Record<string, { lat: number; lng: number }> = {
 
   // Ciudades de exilio donde también se publicaron revistas españolas.
   paris: { lat: 48.8566, lng: 2.3522 },
+  londres: { lat: 51.5074, lng: -0.1278 },
   'buenos aires': { lat: -34.6037, lng: -58.3816 },
   mexico: { lat: 19.4326, lng: -99.1332 },
   'mexico df': { lat: 19.4326, lng: -99.1332 },
