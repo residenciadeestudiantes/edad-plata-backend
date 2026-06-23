@@ -38,6 +38,9 @@
       "multiple": true,
       "allowedTypes": ["images"]
     },
+    "id_articulo_legado": {
+      "type": "integer"
+    },
     "issue": {
       "type": "relation",
       "relation": "manyToOne",
