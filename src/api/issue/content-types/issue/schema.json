@@ -34,6 +34,9 @@
     "url_facsimil": {
       "type": "string"
     },
+    "id_numero_legado": {
+      "type": "integer"
+    },
     "publication": {
       "type": "relation",
       "relation": "manyToOne",
