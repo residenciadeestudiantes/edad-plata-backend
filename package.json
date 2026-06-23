@@ -1,6 +1,6 @@
 {
   "name": "backend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A Strapi application",
   "scripts": {
@@ -19,6 +19,7 @@
     "@strapi/plugin-users-permissions": "5.48.1",
     "@strapi/strapi": "5.48.1",
     "better-sqlite3": "12.8.0",
+    "natural": "^8.1.1",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "react-router-dom": "^6.0.0",

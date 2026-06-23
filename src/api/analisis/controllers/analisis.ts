@@ -1,10 +1,18 @@
+
 // PROTOTIPO: cálculo TF-IDF implementado en Node.js para validación.
 // En producción, este endpoint delegará en un microservicio FastAPI + scikit-learn
 // que expone la misma interfaz JSON. El frontend no requerirá cambios.
 
 import type { Context } from 'koa';
-import * as bigramas from '../services/bigramas';
-import { STOPWORDS } from '../services/stopwords';
+import { PorterStemmerEs } from 'natural';
+import {
+  construirIndice,
+  obtenerIndice,
+  obtenerFechaConstruccion,
+  calcularProbabilidades,
+  calcularEntropiaShannon,
+  type ProbabilidadToken,
+} from '../services/bigramas';
 
 interface ArticleRow {
   article_id: number;
@@ -70,16 +78,99 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+// Para la búsqueda con expansión morfológica: reduce una palabra a su raíz
+// (stemming en español). Cubre conjugaciones verbales y variantes de número
+// (cantar/cantaba/cantando, libro/libros) porque comparten la misma raíz,
+// pero NO familias derivativas con sufijos distintos sobre bases distintas
+// (libre/libertad/liberación) — para eso haría falta un diccionario de
+// sinónimos. Es la misma limitación que tendría el diccionario "spanish" de
+// PostgreSQL, que internamente también usa stemming Snowball.
+function raizMorfologica(palabra: string): string {
+  return PorterStemmerEs.stem(palabra.toLowerCase());
+}
+
+const WORD_REGEX_MORFOLOGICA = /[\p{L}\p{N}]+/gu;
+
+interface OcurrenciaMorfologica {
+  wordIndex: number;
+  charIndex: number;
+  texto: string;
+  raiz: string;
+}
+
+function recopilarOcurrencias(plainText: string): OcurrenciaMorfologica[] {
+  const ocurrencias: OcurrenciaMorfologica[] = [];
+  let wordIndex = 0;
+  for (const match of plainText.matchAll(WORD_REGEX_MORFOLOGICA)) {
+    ocurrencias.push({
+      wordIndex,
+      charIndex: match.index ?? 0,
+      texto: match[0],
+      raiz: raizMorfologica(match[0]),
+    });
+    wordIndex += 1;
+  }
+  return ocurrencias;
+}
+
+// Fragmento de contexto para una coincidencia de una sola palabra: idéntico
+// al de concordancias/buscar, con la palabra encontrada entre **asteriscos**.
+function construirFragmentoMorfologico(plainText: string, ocurrencia: OcurrenciaMorfologica): string {
+  const start = Math.max(0, ocurrencia.charIndex - CONTEXT_CHARS);
+  const end = Math.min(plainText.length, ocurrencia.charIndex + ocurrencia.texto.length + CONTEXT_CHARS);
+  const antes = collapseWhitespace(plainText.slice(start, ocurrencia.charIndex));
+  const despues = collapseWhitespace(
+    plainText.slice(ocurrencia.charIndex + ocurrencia.texto.length, end)
+  );
+  return `${antes} **${ocurrencia.texto}** ${despues}`.trim();
+}
+
+// Fragmento de contexto para una coincidencia de proximidad entre dos
+// palabras: abarca desde la primera ocurrencia (en orden de aparición en el
+// texto) hasta la segunda, con ambas resaltadas entre **asteriscos**.
+function construirFragmentoProximidad(
+  plainText: string,
+  ocurrenciaA: OcurrenciaMorfologica,
+  ocurrenciaB: OcurrenciaMorfologica
+): string {
+  const primera = ocurrenciaA.charIndex <= ocurrenciaB.charIndex ? ocurrenciaA : ocurrenciaB;
+  const segunda = ocurrenciaA.charIndex <= ocurrenciaB.charIndex ? ocurrenciaB : ocurrenciaA;
+
+  const start = Math.max(0, primera.charIndex - CONTEXT_CHARS);
+  const end = Math.min(plainText.length, segunda.charIndex + segunda.texto.length + CONTEXT_CHARS);
+
+  const antes = collapseWhitespace(plainText.slice(start, primera.charIndex));
+  const entre = collapseWhitespace(
+    plainText.slice(primera.charIndex + primera.texto.length, segunda.charIndex)
+  );
+  const despues = collapseWhitespace(plainText.slice(segunda.charIndex + segunda.texto.length, end));
+
+  return `${antes} **${primera.texto}** ${entre} **${segunda.texto}** ${despues}`.trim();
+}
+
+// Stopwords del español para el análisis estilométrico (TF-IDF). A diferencia
+// de `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
+// tildes: la tokenización de este endpoint no pliega diacríticos.
+const STOPWORDS = new Set([
+  'de', 'la', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un',
+  'para', 'con', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le',
+  'ya', 'o', 'este', 'sí', 'porque', 'esta', 'entre', 'cuando', 'muy', 'sin',
+  'sobre', 'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo',
+  'nos', 'durante', 'estados', 'todos', 'uno', 'les', 'ni', 'contra',
+]);
+
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
-// letras Unicode), separado por espacios. Por defecto descarta las
-// stopwords (palabras funcionales); `incluirFuncionales` permite
-// conservarlas para quien quiera analizar el corpus sin ese filtro.
-function tokenize(text: string, incluirFuncionales = false): string[] {
-  return text
+// letras Unicode), separado por espacios. Filtra stopwords salvo que se pida
+// `incluirFuncionales` (el análisis estilométrico permite incluirlas, ya que
+// la frecuencia de palabras funcionales es en sí misma un rasgo de estilo).
+function tokenize(text: string, opciones: { incluirFuncionales?: boolean } = {}): string[] {
+  const tokens = text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
-    .filter((token) => token.length > 0 && (incluirFuncionales || !STOPWORDS.has(token)));
+    .filter((token) => token.length > 0);
+
+  return opciones.incluirFuncionales ? tokens : tokens.filter((token) => !STOPWORDS.has(token));
 }
 
 interface EstilometriaAuthorRow {
@@ -165,29 +256,31 @@ function interpretarDistancia(distancia: number): string {
   return 'muy distinto';
 }
 
-// Cuántas palabras (como máximo) se devuelven por autor para la nube de
-// palabras comparativa: a diferencia de las "palabras características"
-// (que usan el peso TF-IDF diferencial frente al otro autor), aquí se usa
-// la frecuencia absoluta dentro del propio corpus del autor.
-const PALABRAS_NUBE = 80;
+interface PalabraFrecuencia {
+  text: string;
+  value: number;
+}
 
-function contarFrecuencias(tokens: string[], top = PALABRAS_NUBE): { text: string; value: number }[] {
+const TOP_PALABRAS_NUBE = 150;
+
+// Cuenta frecuencias de tokens ya tokenizados y devuelve las más frecuentes
+// en el formato {text, value} que espera react-d3-cloud en el frontend.
+function contarFrecuencias(tokens: string[]): PalabraFrecuencia[] {
   const conteo = new Map<string, number>();
   for (const token of tokens) {
     conteo.set(token, (conteo.get(token) ?? 0) + 1);
   }
-
   return [...conteo.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, top)
-    .map(([text, value]) => ({ text, value }));
+    .map(([text, value]) => ({ text, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, TOP_PALABRAS_NUBE);
 }
 
-// Por debajo de esta frecuencia, la distribución de sucesores/predecesores
-// de una palabra tiene tan pocas muestras que su entropía no es
-// estadísticamente fiable (un par de ocurrencias sueltas puede parecer
-// "muy variado" sin serlo realmente).
-const FRECUENCIA_MINIMA_CADENAS = 20;
+const COLORES_INNOVACION = ['#2563eb', '#dc2626', '#16a34a', '#ca8a04'];
+const UMBRAL_POCOS_AUTORES_NORMA = 5;
+const UMBRAL_POCOS_ARTICULOS_AUTOR = 3;
+
+const FRECUENCIA_MINIMA_FIABLE = 5;
 
 interface InterpretacionEntropia {
   nivel: 'insuficiente' | 'convencional' | 'moderado' | 'variado' | 'innovador';
@@ -195,22 +288,45 @@ interface InterpretacionEntropia {
   fiable: boolean;
 }
 
-// Interpreta la entropía normalizada (0-1 respecto al máximo teórico para el
-// número de sucesores observados) en una etiqueta legible. Si la frecuencia
-// de la palabra no alcanza FRECUENCIA_MINIMA_CADENAS, la entropía no se
-// considera fiable independientemente de su valor.
-function interpretarEntropia(normalizada: number, fiable: boolean): InterpretacionEntropia {
+// Interpreta la entropía normalizada (0-1) de la distribución de palabras
+// sucesoras: a mayor entropía, mayor variedad/impredecibilidad de uso.
+function interpretarEntropia(entropiaNormalizada: number, fiable: boolean): InterpretacionEntropia {
   if (!fiable) {
     return {
       nivel: 'insuficiente',
-      texto: 'Frecuencia insuficiente para análisis fiable',
+      texto: `Frecuencia insuficiente (menos de ${FRECUENCIA_MINIMA_FIABLE} apariciones) para una interpretación fiable.`,
       fiable: false,
     };
   }
-  if (normalizada < 0.3) return { nivel: 'convencional', texto: 'Uso muy convencional', fiable: true };
-  if (normalizada < 0.5) return { nivel: 'moderado', texto: 'Uso moderadamente predecible', fiable: true };
-  if (normalizada < 0.7) return { nivel: 'variado', texto: 'Uso variado', fiable: true };
-  return { nivel: 'innovador', texto: 'Uso innovador', fiable: true };
+  if (entropiaNormalizada < 0.25) {
+    return { nivel: 'convencional', texto: 'Uso muy predecible: casi siempre va seguida de las mismas palabras.', fiable: true };
+  }
+  if (entropiaNormalizada < 0.5) {
+    return { nivel: 'moderado', texto: 'Uso moderadamente variado.', fiable: true };
+  }
+  if (entropiaNormalizada < 0.75) {
+    return { nivel: 'variado', texto: 'Uso variado: aparece en contextos diversos.', fiable: true };
+  }
+  return {
+    nivel: 'innovador',
+    texto: 'Uso muy variado e innovador: se combina con un amplio abanico de términos distintos.',
+    fiable: true,
+  };
+}
+
+interface CadenasLexicasAutorRespuesta {
+  slug: string;
+  sinDatos?: boolean;
+  sucesores?: (ProbabilidadToken & { probabilidadCorpus: number; desviacion: number })[];
+  predecesores?: ProbabilidadToken[];
+  entropia?: number;
+  desviacionEntropia?: number;
+  frecuenciaTotal?: number;
+  fiable?: boolean;
+  frecuenciaMinima?: number;
+  entropiaNormalizada?: number;
+  entropiaMaxima?: number;
+  interpretacion?: InterpretacionEntropia;
 }
 
 export default {
@@ -509,8 +625,8 @@ export default {
     const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
     const texto2 = autor2Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
 
-    const tokens1 = tokenize(texto1, incluirFuncionales);
-    const tokens2 = tokenize(texto2, incluirFuncionales);
+    const tokens1 = tokenize(texto1, { incluirFuncionales });
+    const tokens2 = tokenize(texto2, { incluirFuncionales });
 
     if (tokens1.length === 0) {
       return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene texto suficiente para el análisis.`);
@@ -567,349 +683,521 @@ export default {
     });
   },
 
-  // Nube de palabras de todo el corpus de un autor (página de autor), con
-  // posibilidad de acotarla además a una sola revista para comparar ambas
-  // nubes lado a lado. Se calcula a demanda (no en la carga de la página)
-  // porque recorre el texto completo de todos los artículos del autor.
   async nubePalabrasAutor(ctx: Context) {
     const autorSlug = typeof ctx.query.autor === 'string' ? ctx.query.autor.trim() : '';
-
     if (!autorSlug) {
       return ctx.badRequest('El parámetro "autor" es obligatorio.');
     }
-
     const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
-    const incluirFuncionales = ctx.query.incluirFuncionales === 'true';
 
     const knex = strapi.db.connection;
 
-    const author: EstilometriaAuthorRow | undefined = await knex('authors as au')
-      .where('au.slug', autorSlug)
-      .andWhere('au.published_at', 'is not', null)
-      .select('au.slug as slug', 'au.nombre as nombre')
+    const autorInfo: { slug: string; nombre: string } | undefined = await knex('authors')
+      .where('slug', autorSlug)
+      .andWhere('published_at', 'is not', null)
+      .select('slug', 'nombre')
       .first();
 
-    if (!author) {
+    if (!autorInfo) {
       return ctx.notFound(`No se ha encontrado el autor "${autorSlug}".`);
     }
 
-    const articleRows: EstilometriaArticleRow[] = await knex('articles_authors_lnk as aal')
-      .innerJoin('articles as a', 'a.id', 'aal.article_id')
+    const filas: { texto: string | null; revista_slug: string; revista_titulo: string }[] = await knex(
+      'articles_authors_lnk as aal'
+    )
       .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .innerJoin('articles as a', 'a.id', 'aal.article_id')
+      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+      .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+      .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
       .where('au.slug', autorSlug)
       .andWhere('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
-      .select('a.texto as texto');
+      .andWhere('i.published_at', 'is not', null)
+      .andWhere('p.published_at', 'is not', null)
+      .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
-    const textoCompleto = articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
-    const tokensCompleto = tokenize(textoCompleto, incluirFuncionales);
+    const corpusCompleto = contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' ')));
 
-    let revista: {
-      slug: string;
-      titulo: string;
-      num_articulos: number;
-      palabras: { text: string; value: number }[];
-    } | null = null;
+    let revista: { slug: string; titulo: string; num_articulos: number; palabras: PalabraFrecuencia[] } | null =
+      null;
 
     if (revistaSlug) {
-      const publication: { slug: string; titulo: string } | undefined = await knex('publications as p')
-        .where('p.slug', revistaSlug)
-        .andWhere('p.published_at', 'is not', null)
-        .select('p.slug as slug', 'p.titulo as titulo')
+      const publicacion: { titulo: string } | undefined = await knex('publications')
+        .where('slug', revistaSlug)
+        .andWhere('published_at', 'is not', null)
+        .select('titulo')
         .first();
 
-      if (!publication) {
-        return ctx.notFound(`No se ha encontrado la revista "${revistaSlug}".`);
+      if (publicacion) {
+        const filasRevista = filas.filter((f) => f.revista_slug === revistaSlug);
+        revista = {
+          slug: revistaSlug,
+          titulo: publicacion.titulo,
+          num_articulos: filasRevista.length,
+          palabras: contarFrecuencias(
+            tokenize(filasRevista.map((f) => htmlToPlainText(f.texto)).join(' '))
+          ),
+        };
       }
-
-      const articleRowsRevista: EstilometriaArticleRow[] = await knex('articles_authors_lnk as aal')
-        .innerJoin('articles as a', 'a.id', 'aal.article_id')
-        .innerJoin('authors as au', 'au.id', 'aal.author_id')
-        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
-        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
-        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
-        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
-        .where('au.slug', autorSlug)
-        .andWhere('p.slug', revistaSlug)
-        .andWhere('au.published_at', 'is not', null)
-        .andWhere('a.published_at', 'is not', null)
-        .andWhere('i.published_at', 'is not', null)
-        .andWhere('p.published_at', 'is not', null)
-        .select('a.texto as texto');
-
-      const textoRevista = articleRowsRevista.map((row) => htmlToPlainText(row.texto)).join(' ');
-      const tokensRevista = tokenize(textoRevista, incluirFuncionales);
-
-      revista = {
-        slug: publication.slug,
-        titulo: publication.titulo,
-        num_articulos: articleRowsRevista.length,
-        palabras: contarFrecuencias(tokensRevista),
-      };
     }
 
     return ctx.send({
-      autor: {
-        slug: author.slug,
-        nombre: author.nombre,
-        num_articulos: articleRows.length,
-      },
-      corpus_completo: contarFrecuencias(tokensCompleto),
+      autor: { slug: autorInfo.slug, nombre: autorInfo.nombre, num_articulos: filas.length },
+      corpus_completo: corpusCompleto,
       revista,
     });
   },
 
-  // Deriva estilística de 1 a 4 autores respecto a la norma del corpus (el
-  // centroide TF-IDF de TODOS los autores con artículos publicados). Para
-  // cada autor seleccionado, cada punto de la trayectoria es un "documento"
-  // TF-IDF con sus artículos de un año concreto, comparado por distancia de
-  // coseno contra el centroide de la norma.
   async innovacion(ctx: Context) {
-    const autoresParam = typeof ctx.query.autores === 'string' ? ctx.query.autores : '';
-    const slugs = [...new Set(autoresParam.split(',').map((s) => s.trim()).filter(Boolean))];
+    const autoresRaw = typeof ctx.query.autores === 'string' ? ctx.query.autores : '';
+    const slugsSolicitados = [
+      ...new Set(autoresRaw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)),
+    ];
 
-    if (slugs.length === 0) {
-      return ctx.badRequest('El parámetro "autores" es obligatorio (de 1 a 4 slugs separados por comas).');
-    }
-    if (slugs.length > 4) {
-      return ctx.badRequest('Selecciona como máximo 4 autores.');
+    if (slugsSolicitados.length === 0 || slugsSolicitados.length > 4) {
+      return ctx.badRequest(
+        'El parámetro "autores" debe incluir entre 1 y 4 slugs de autor separados por comas.'
+      );
     }
 
     const knex = strapi.db.connection;
 
-    const rows: { autor_slug: string; autor_nombre: string; texto: string | null; anio: number | null }[] =
-      await knex('articles as a')
-        .innerJoin('articles_authors_lnk as aal', 'aal.article_id', 'a.id')
-        .innerJoin('authors as au', 'au.id', 'aal.author_id')
-        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
-        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
-        .where('a.published_at', 'is not', null)
-        .andWhere('au.published_at', 'is not', null)
-        .andWhere('i.published_at', 'is not', null)
-        .select(
-          'au.slug as autor_slug',
-          'au.nombre as autor_nombre',
-          'a.texto as texto',
-          'i.ano as anio'
-        );
+    const autoresInfo: { slug: string; nombre: string }[] = await knex('authors')
+      .whereIn('slug', slugsSolicitados)
+      .andWhere('published_at', 'is not', null)
+      .select('slug', 'nombre');
 
-    const nombrePorSlug = new Map<string, string>();
-    for (const row of rows) {
-      nombrePorSlug.set(row.autor_slug, row.autor_nombre);
+    const autoresInfoPorSlug = new Map(autoresInfo.map((a) => [a.slug, a]));
+    const slugFaltante = slugsSolicitados.find((slug) => !autoresInfoPorSlug.has(slug));
+    if (slugFaltante) {
+      return ctx.notFound(`No se ha encontrado el autor "${slugFaltante}".`);
     }
 
-    for (const slug of slugs) {
-      if (!nombrePorSlug.has(slug)) {
-        return ctx.notFound(`No se ha encontrado el autor "${slug}" (o no tiene artículos publicados).`);
+    // Corpus de referencia: todos los autores publicados con al menos un
+    // artículo publicado, usados para calcular la norma estilística
+    // (centroide TF-IDF de todos los autores).
+    const filasReferencia: { autor_slug: string; texto: string | null }[] = await knex(
+      'articles_authors_lnk as aal'
+    )
+      .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .innerJoin('articles as a', 'a.id', 'aal.article_id')
+      .where('au.published_at', 'is not', null)
+      .andWhere('a.published_at', 'is not', null)
+      .select('au.slug as autor_slug', 'a.texto as texto');
+
+    const textosPorAutor = new Map<string, string[]>();
+    for (const fila of filasReferencia) {
+      const textos = textosPorAutor.get(fila.autor_slug) ?? [];
+      textos.push(fila.texto ?? '');
+      textosPorAutor.set(fila.autor_slug, textos);
+    }
+
+    const slugsReferencia: string[] = [];
+    const tokensReferencia: string[][] = [];
+    for (const [slug, textos] of textosPorAutor) {
+      const tokens = tokenize(textos.map(htmlToPlainText).join(' '));
+      if (tokens.length === 0) continue;
+      slugsReferencia.push(slug);
+      tokensReferencia.push(tokens);
+    }
+
+    if (slugsReferencia.length === 0) {
+      return ctx.badRequest('No hay suficientes datos en el corpus para calcular la innovación estilística.');
+    }
+
+    // Artículos por autor y año de los autores solicitados, para construir
+    // su trayectoria en el MISMO espacio vectorial que la norma (se añaden
+    // como documentos extra a la misma llamada a buildTfIdf, más abajo).
+    const filasPorAnio: { autor_slug: string; texto: string | null; anio: number | null }[] = await knex(
+      'articles_authors_lnk as aal'
+    )
+      .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .innerJoin('articles as a', 'a.id', 'aal.article_id')
+      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+      .whereIn('au.slug', slugsSolicitados)
+      .andWhere('au.published_at', 'is not', null)
+      .andWhere('a.published_at', 'is not', null)
+      .andWhere('i.published_at', 'is not', null)
+      .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
+
+    const aniosPorAutor = new Map<string, Map<number, string[]>>();
+    const totalArticulosPorAutor = new Map<string, number>();
+    for (const fila of filasPorAnio) {
+      totalArticulosPorAutor.set(fila.autor_slug, (totalArticulosPorAutor.get(fila.autor_slug) ?? 0) + 1);
+      if (fila.anio === null) continue;
+      const porAnio = aniosPorAutor.get(fila.autor_slug) ?? new Map<number, string[]>();
+      const textos = porAnio.get(fila.anio) ?? [];
+      textos.push(fila.texto ?? '');
+      porAnio.set(fila.anio, textos);
+      aniosPorAutor.set(fila.autor_slug, porAnio);
+    }
+
+    const puntosTrayectoria: { autorSlug: string; anio: number }[] = [];
+    const tokensPuntos: string[][] = [];
+    for (const slug of slugsSolicitados) {
+      const porAnio = aniosPorAutor.get(slug) ?? new Map<number, string[]>();
+      for (const [anio, textos] of porAnio) {
+        const tokens = tokenize(textos.map(htmlToPlainText).join(' '));
+        if (tokens.length === 0) continue;
+        puntosTrayectoria.push({ autorSlug: slug, anio });
+        tokensPuntos.push(tokens);
       }
     }
 
-    // --- Norma: centroide TF-IDF de todo el corpus (todos los autores) ---
-    const tokensNorma = tokenize(rows.map((row) => htmlToPlainText(row.texto)).join(' '));
-    const autoresEnNorma = new Set(rows.map((row) => row.autor_slug)).size;
+    const tokensByDoc = [...tokensReferencia, ...tokensPuntos];
+    const vocabulario = [...new Set(tokensByDoc.flat())];
+    const vectores = buildTfIdf(tokensByDoc, vocabulario);
 
-    // --- Un "documento" TF-IDF por cada (autor, año) de los seleccionados ---
-    interface PuntoPendiente {
-      slug: string;
-      anio: number;
-      tokens: string[];
-      numArticulos: number;
-    }
-    const puntosPorAutorAño = new Map<string, PuntoPendiente>();
-    const totalArticulosPorAutor = new Map<string, number>();
+    const vectoresAutoresReferencia = vectores.slice(0, slugsReferencia.length);
+    const vectoresPuntos = vectores.slice(slugsReferencia.length);
 
-    for (const row of rows) {
-      if (!slugs.includes(row.autor_slug)) continue;
-
-      totalArticulosPorAutor.set(
-        row.autor_slug,
-        (totalArticulosPorAutor.get(row.autor_slug) ?? 0) + 1
-      );
-
-      if (row.anio === null) continue;
-
-      const clave = `${row.autor_slug}::${row.anio}`;
-      const punto = puntosPorAutorAño.get(clave) ?? {
-        slug: row.autor_slug,
-        anio: row.anio,
-        tokens: [],
-        numArticulos: 0,
-      };
-      punto.tokens.push(...tokenize(htmlToPlainText(row.texto)));
-      punto.numArticulos += 1;
-      puntosPorAutorAño.set(clave, punto);
+    const centroide: TfIdfVector = new Map();
+    for (const palabra of vocabulario) {
+      const suma = vectoresAutoresReferencia.reduce((acc, v) => acc + (v.get(palabra) ?? 0), 0);
+      centroide.set(palabra, suma / vectoresAutoresReferencia.length);
     }
 
-    const puntos = [...puntosPorAutorAño.values()]
-      .filter((punto) => punto.tokens.length > 0)
-      .sort((a, b) => a.anio - b.anio);
+    const norma = {
+      num_autores: slugsReferencia.length,
+      num_articulos: filasReferencia.length,
+      aviso_pocos_datos:
+        slugsReferencia.length < UMBRAL_POCOS_AUTORES_NORMA
+          ? `La norma se ha calculado con solo ${slugsReferencia.length} autores; los resultados pueden ser poco representativos.`
+          : null,
+    };
 
-    const documentos = [tokensNorma, ...puntos.map((punto) => punto.tokens)];
-    const vocabulario = [...new Set(documentos.flat())];
-    const vectores = buildTfIdf(documentos, vocabulario);
-    const vectorNorma = vectores[0];
-
-    const UMBRAL_ARTICULOS_AUTOR = 3;
-    const UMBRAL_ARTICULOS_NORMA = 20;
-    const COLORES_AUTORES = ['#DA3C00', '#3838BD', '#008867', '#DD158B'];
-
-    const autoresResultado = slugs.map((slug, index) => {
-      const nombre = nombrePorSlug.get(slug) as string;
+    const autores = slugsSolicitados.map((slug, indice) => {
+      const info = autoresInfoPorSlug.get(slug)!;
       const numArticulos = totalArticulosPorAutor.get(slug) ?? 0;
 
-      const trayectoria = puntos
-        .map((punto, i) => ({ punto, vector: vectores[i + 1] }))
-        .filter(({ punto }) => punto.slug === slug)
+      const trayectoria = puntosTrayectoria
+        .map((punto, i) => ({ punto, vector: vectoresPuntos[i] }))
+        .filter(({ punto }) => punto.autorSlug === slug)
         .map(({ punto, vector }) => ({
           año: punto.anio,
-          distancia: 1 - cosineSimilarity(vector, vectorNorma, vocabulario),
-          num_articulos: punto.numArticulos,
-        }));
+          distancia: 1 - cosineSimilarity(vector, centroide, vocabulario),
+          num_articulos: aniosPorAutor.get(slug)?.get(punto.anio)?.length ?? 0,
+        }))
+        .sort((a, b) => a.año - b.año);
 
       return {
         slug,
-        nombre,
-        color: COLORES_AUTORES[index % COLORES_AUTORES.length],
+        nombre: info.nombre,
+        color: COLORES_INNOVACION[indice] ?? '#6b7280',
         num_articulos: numArticulos,
         aviso_pocos_datos:
-          numArticulos < UMBRAL_ARTICULOS_AUTOR
-            ? `El cálculo de ${nombre} se ha hecho con ${numArticulos} artículo${numArticulos === 1 ? '' : 's'} y puede no ser representativo.`
+          numArticulos < UMBRAL_POCOS_ARTICULOS_AUTOR
+            ? `Este autor tiene solo ${numArticulos} artículo(s) publicado(s); los resultados pueden ser poco fiables.`
             : null,
         trayectoria,
       };
     });
 
-    return ctx.send({
-      norma: {
-        num_autores: autoresEnNorma,
-        num_articulos: rows.length,
-        aviso_pocos_datos:
-          rows.length < UMBRAL_ARTICULOS_NORMA
-            ? `El cálculo de la norma se ha hecho con ${rows.length} artículo${rows.length === 1 ? '' : 's'} de ${autoresEnNorma} autor${autoresEnNorma === 1 ? '' : 'es'} y puede no ser representativo.`
-            : null,
-      },
-      autores: autoresResultado,
-    });
+    return ctx.send({ norma, autores });
   },
 
-  // Cadenas léxicas: probabilidad de que una palabra vaya seguida/precedida
-  // de otra en el corpus (y, opcionalmente, en los textos de un autor
-  // concreto), con su entropía de Shannon como medida de variedad de uso.
-  // El índice de bigramas se construye bajo demanda y se cachea en memoria
-  // (ver services/bigramas.ts).
   async cadenasLexicas(ctx: Context) {
-    const palabraRaw = typeof ctx.query.palabra === 'string' ? ctx.query.palabra : '';
+    const palabraRaw = ctx.query.palabra;
+    if (!palabraRaw || typeof palabraRaw !== 'string' || palabraRaw.trim().length === 0) {
+      return ctx.badRequest('El parámetro "palabra" es obligatorio.');
+    }
+    const palabra = palabraRaw.trim().toLowerCase();
+
     const autorSlug = typeof ctx.query.autorSlug === 'string' ? ctx.query.autorSlug.trim() : '';
     const reconstruir = ctx.query.reconstruir === 'true';
 
-    if (!palabraRaw || palabraRaw.trim().length < 2) {
-      return ctx.badRequest('Se requiere una palabra de al menos 2 caracteres.');
+    if (autorSlug) {
+      const autor = await strapi.db
+        .connection('authors')
+        .where('slug', autorSlug)
+        .andWhere('published_at', 'is not', null)
+        .first();
+      if (!autor) {
+        return ctx.notFound(`No se ha encontrado el autor "${autorSlug}".`);
+      }
     }
 
-    if (!bigramas.obtenerIndice() || reconstruir) {
-      await bigramas.construirIndice(strapi);
+    if (reconstruir || !obtenerIndice()) {
+      await construirIndice(strapi);
     }
+    const indice = obtenerIndice()!;
 
-    const indice = bigramas.obtenerIndice();
-    if (!indice) {
-      return ctx.internalServerError('No se ha podido construir el índice léxico.');
-    }
-
-    const palabraNorm = palabraRaw.toLowerCase().trim();
-
-    const sucesoresCorpus = bigramas.calcularProbabilidades(
-      indice.indiceCorpus,
-      indice.frecuenciasCorpus,
-      palabraNorm
-    );
-    const predecesoresCorpus = bigramas.calcularProbabilidades(
+    const sucesoresCorpus = calcularProbabilidades(indice.indiceCorpus, indice.frecuenciasCorpus, palabra, 10);
+    const predecesoresCorpus = calcularProbabilidades(
       indice.indicePredecesores,
       indice.frecuenciasCorpus,
-      palabraNorm
+      palabra,
+      10
     );
-    const entropiaCorpus = bigramas.calcularEntropiaShannon(sucesoresCorpus);
+    const sucesoresCorpusCompletos = calcularProbabilidades(
+      indice.indiceCorpus,
+      indice.frecuenciasCorpus,
+      palabra,
+      Number.MAX_SAFE_INTEGER
+    );
+    const frecuenciaTotalCorpus = indice.frecuenciasCorpus.get(palabra) ?? 0;
+    const entropiaCorpus = calcularEntropiaShannon(sucesoresCorpusCompletos);
+    const fiableCorpus = frecuenciaTotalCorpus >= FRECUENCIA_MINIMA_FIABLE;
+    const numSucesoresDistintosCorpus = indice.indiceCorpus.get(palabra)?.size ?? 0;
+    const entropiaMaximaCorpus = numSucesoresDistintosCorpus > 0 ? Math.log2(numSucesoresDistintosCorpus) : 0;
+    const entropiaNormalizadaCorpus = entropiaMaximaCorpus > 0 ? entropiaCorpus / entropiaMaximaCorpus : 0;
 
-    const frecuenciaCorpus = indice.frecuenciasCorpus.get(palabraNorm) ?? 0;
-    const fiableCorpus = frecuenciaCorpus >= FRECUENCIA_MINIMA_CADENAS;
-    // Entropía máxima teórica para el número de sucesores observados (una
-    // distribución uniforme entre N opciones tiene entropía log2(N); con 0 o
-    // 1 sucesor no hay variedad posible que medir, así que se usa 1 para no
-    // dividir por cero sin que ello implique nada sobre la fiabilidad).
-    const entropiaMaximaCorpus =
-      sucesoresCorpus.length > 1 ? Math.log2(sucesoresCorpus.length) : 1;
-    const entropiaNormalizadaCorpus =
-      entropiaMaximaCorpus > 0 ? entropiaCorpus / entropiaMaximaCorpus : 0;
+    const corpus = {
+      sucesores: sucesoresCorpus,
+      predecesores: predecesoresCorpus,
+      entropia: entropiaCorpus,
+      frecuenciaTotal: frecuenciaTotalCorpus,
+      fiable: fiableCorpus,
+      frecuenciaMinima: FRECUENCIA_MINIMA_FIABLE,
+      entropiaNormalizada: entropiaNormalizadaCorpus,
+      entropiaMaxima: entropiaMaximaCorpus,
+      interpretacion: interpretarEntropia(entropiaNormalizadaCorpus, fiableCorpus),
+    };
 
-    let datosAutor: Record<string, unknown> | null = null;
+    let autor: CadenasLexicasAutorRespuesta | null = null;
+
     if (autorSlug) {
-      const indiceAutor = indice.indiceAutores.get(autorSlug);
-      const frecuenciasAutor = indice.frecuenciasAutor.get(autorSlug);
+      const frecAutorMap = indice.frecuenciasAutor.get(autorSlug) ?? new Map<string, number>();
+      const frecuenciaTotalAutor = frecAutorMap.get(palabra) ?? 0;
 
-      if (indiceAutor && frecuenciasAutor) {
-        const sucesoresAutor = bigramas.calcularProbabilidades(
-          indiceAutor,
-          frecuenciasAutor,
-          palabraNorm
+      if (frecuenciaTotalAutor === 0) {
+        autor = { slug: autorSlug, sinDatos: true };
+      } else {
+        const indiceSucesoresAutor =
+          indice.indiceAutores.get(autorSlug) ?? new Map<string, Map<string, number>>();
+        const indicePredecesoresAutor =
+          indice.indicePredecesoresAutores.get(autorSlug) ?? new Map<string, Map<string, number>>();
+
+        const sucesoresAutorBase = calcularProbabilidades(indiceSucesoresAutor, frecAutorMap, palabra, 10);
+        const mapaProbabilidadCorpus = new Map(sucesoresCorpusCompletos.map((s) => [s.token, s.probabilidad]));
+        const sucesoresAutor = sucesoresAutorBase.map((s) => {
+          const probabilidadCorpus = mapaProbabilidadCorpus.get(s.token) ?? 0;
+          return { ...s, probabilidadCorpus, desviacion: s.probabilidad - probabilidadCorpus };
+        });
+
+        const predecesoresAutor = calcularProbabilidades(indicePredecesoresAutor, frecAutorMap, palabra, 10);
+        const sucesoresAutorCompletos = calcularProbabilidades(
+          indiceSucesoresAutor,
+          frecAutorMap,
+          palabra,
+          Number.MAX_SAFE_INTEGER
         );
-        const predecesoresAutor = bigramas.calcularProbabilidades(
-          indice.indicePredecesoresAutores.get(autorSlug) ?? new Map(),
-          frecuenciasAutor,
-          palabraNorm
-        );
-        const entropiaAutor = bigramas.calcularEntropiaShannon(sucesoresAutor);
+        const entropiaAutor = calcularEntropiaShannon(sucesoresAutorCompletos);
+        const fiableAutor = frecuenciaTotalAutor >= FRECUENCIA_MINIMA_FIABLE;
+        const numSucesoresDistintosAutor = indiceSucesoresAutor.get(palabra)?.size ?? 0;
+        const entropiaMaximaAutor = numSucesoresDistintosAutor > 0 ? Math.log2(numSucesoresDistintosAutor) : 0;
+        const entropiaNormalizadaAutor = entropiaMaximaAutor > 0 ? entropiaAutor / entropiaMaximaAutor : 0;
 
-        const frecuenciaAutor = frecuenciasAutor.get(palabraNorm) ?? 0;
-        const fiableAutor = frecuenciaAutor >= FRECUENCIA_MINIMA_CADENAS;
-        const entropiaMaximaAutor =
-          sucesoresAutor.length > 1 ? Math.log2(sucesoresAutor.length) : 1;
-        const entropiaNormalizadaAutor =
-          entropiaMaximaAutor > 0 ? entropiaAutor / entropiaMaximaAutor : 0;
-
-        const mapaCorpus = new Map(sucesoresCorpus.map((s) => [s.token, s.probabilidad]));
-        const sucesoresConDesviacion = sucesoresAutor.map((s) => ({
-          ...s,
-          probabilidadCorpus: mapaCorpus.get(s.token) ?? 0,
-          desviacion: s.probabilidad - (mapaCorpus.get(s.token) ?? 0),
-        }));
-
-        datosAutor = {
+        autor = {
           slug: autorSlug,
-          sucesores: sucesoresConDesviacion,
+          sucesores: sucesoresAutor,
           predecesores: predecesoresAutor,
           entropia: entropiaAutor,
           desviacionEntropia: entropiaAutor - entropiaCorpus,
-          frecuenciaTotal: frecuenciaAutor,
+          frecuenciaTotal: frecuenciaTotalAutor,
           fiable: fiableAutor,
-          frecuenciaMinima: FRECUENCIA_MINIMA_CADENAS,
+          frecuenciaMinima: FRECUENCIA_MINIMA_FIABLE,
           entropiaNormalizada: entropiaNormalizadaAutor,
           entropiaMaxima: entropiaMaximaAutor,
           interpretacion: interpretarEntropia(entropiaNormalizadaAutor, fiableAutor),
         };
-      } else {
-        datosAutor = { slug: autorSlug, sinDatos: true };
       }
     }
 
     return ctx.send({
-      palabra: palabraNorm,
-      corpus: {
-        sucesores: sucesoresCorpus,
-        predecesores: predecesoresCorpus,
-        entropia: entropiaCorpus,
-        frecuenciaTotal: frecuenciaCorpus,
-        fiable: fiableCorpus,
-        frecuenciaMinima: FRECUENCIA_MINIMA_CADENAS,
-        entropiaNormalizada: entropiaNormalizadaCorpus,
-        entropiaMaxima: entropiaMaximaCorpus,
-        interpretacion: interpretarEntropia(entropiaNormalizadaCorpus, fiableCorpus),
-      },
-      autor: datosAutor,
+      palabra,
+      corpus,
+      autor,
       metadatos: {
-        fechaConstruccionIndice: bigramas.obtenerFechaConstruccion(),
+        fechaConstruccionIndice: obtenerFechaConstruccion()?.toISOString() ?? null,
         totalArticulos: indice.totalArticulos,
         totalTokens: indice.totalTokens,
       },
     });
+  },
+
+  // Búsqueda con expansión morfológica: reduce la palabra (o las dos
+  // palabras) buscada(s) y cada palabra del texto a su raíz para encontrar
+  // también conjugaciones y variantes de número, no solo la forma literal
+  // escrita. Si se indican `palabra2` y `distancia`, en vez de ocurrencias
+  // sueltas de `palabra`, busca artículos donde una ocurrencia de `palabra`
+  // y otra de `palabra2` aparezcan a un máximo de `distancia` palabras de
+  // separación en el cuerpo del artículo (la búsqueda de proximidad no se
+  // aplica al ámbito título/autor, que no es prosa continua).
+  async morfologica(ctx: Context) {
+    const palabraRaw = typeof ctx.query.palabra === 'string' ? ctx.query.palabra.trim() : '';
+    if (palabraRaw.length < 3) {
+      return ctx.badRequest('El parámetro "palabra" debe tener al menos 3 caracteres.');
+    }
+
+    const palabra2Raw = typeof ctx.query.palabra2 === 'string' ? ctx.query.palabra2.trim() : '';
+    const distanciaRaw = typeof ctx.query.distancia === 'string' ? ctx.query.distancia.trim() : '';
+
+    if (palabra2Raw.length > 0 && (palabra2Raw.length < 3 || !/^\d+$/.test(distanciaRaw))) {
+      return ctx.badRequest(
+        'Para buscar por proximidad, indica una segunda palabra de al menos 3 caracteres y una distancia (en número de palabras).'
+      );
+    }
+
+    const usaProximidad = palabra2Raw.length >= 3 && /^\d+$/.test(distanciaRaw);
+    const distancia = usaProximidad ? Number(distanciaRaw) : null;
+
+    const page = Math.max(1, Number(ctx.query.page) || 1);
+    const pageSize = Math.max(1, Number(ctx.query.pageSize) || 20);
+
+    const buscarEnTituloAutor = !usaProximidad && ctx.query.enTituloAutor !== 'false';
+    const buscarEnTexto = ctx.query.enTexto !== 'false';
+
+    if (!usaProximidad && !buscarEnTituloAutor && !buscarEnTexto) {
+      return ctx.badRequest('Selecciona al menos un ámbito de búsqueda (título/autor o texto).');
+    }
+
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    const autorSlug = typeof ctx.query.autor === 'string' ? ctx.query.autor.trim() : '';
+    const desdeRaw = typeof ctx.query.desde === 'string' ? ctx.query.desde.trim() : '';
+    const hastaRaw = typeof ctx.query.hasta === 'string' ? ctx.query.hasta.trim() : '';
+    const desde = desdeRaw && /^\d+$/.test(desdeRaw) ? Number(desdeRaw) : null;
+    const hasta = hastaRaw && /^\d+$/.test(hastaRaw) ? Number(hastaRaw) : null;
+
+    const knex = strapi.db.connection;
+
+    let articlesQuery = knex('articles as a')
+      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+      .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+      .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+      .where('a.published_at', 'is not', null)
+      .andWhere('i.published_at', 'is not', null)
+      .andWhere('p.published_at', 'is not', null);
+
+    if (revistaSlug) {
+      articlesQuery = articlesQuery.andWhere('p.slug', revistaSlug);
+    }
+    if (desde !== null) {
+      articlesQuery = articlesQuery.andWhere('i.ano', '>=', desde);
+    }
+    if (hasta !== null) {
+      articlesQuery = articlesQuery.andWhere('i.ano', '<=', hasta);
+    }
+
+    if (autorSlug) {
+      const authorArticleIds: number[] = await knex('articles_authors_lnk as aal')
+        .innerJoin('authors as au', 'au.id', 'aal.author_id')
+        .where('au.slug', autorSlug)
+        .andWhere('au.published_at', 'is not', null)
+        .pluck('aal.article_id');
+
+      articlesQuery = articlesQuery.whereIn('a.id', authorArticleIds.length > 0 ? authorArticleIds : [-1]);
+    }
+
+    const articleRows: ArticleRow[] = await articlesQuery.select(
+      'a.id as article_id',
+      'a.titulo as articulo_titulo',
+      'a.slug as articulo_slug',
+      'a.texto as texto',
+      'i.numero_orden as numero_orden',
+      'i.ano as anio',
+      'p.titulo as revista_titulo',
+      'p.slug as revista_slug'
+    );
+
+    if (articleRows.length === 0) {
+      return ctx.send({ data: [], meta: { total: 0, page, pageSize, pageCount: 0 } });
+    }
+
+    const articleIds = articleRows.map((row) => row.article_id);
+
+    const authorRows: { article_id: number; nombre: string }[] = await knex('articles_authors_lnk as aal')
+      .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .whereIn('aal.article_id', articleIds)
+      .andWhere('au.published_at', 'is not', null)
+      .select('aal.article_id as article_id', 'au.nombre as nombre');
+
+    const authorsByArticle = new Map<number, string[]>();
+    for (const row of authorRows) {
+      const list = authorsByArticle.get(row.article_id) ?? [];
+      list.push(row.nombre);
+      authorsByArticle.set(row.article_id, list);
+    }
+
+    const raizBuscada1 = raizMorfologica(palabraRaw);
+    const raizBuscada2 = usaProximidad ? raizMorfologica(palabra2Raw) : null;
+
+    const resultados: {
+      id: number;
+      titulo: string;
+      slug: string;
+      autores: string[];
+      revista: string;
+      revista_slug: string;
+      numero_orden: number | null;
+      año: number | null;
+      fragmento: string;
+    }[] = [];
+
+    for (const row of articleRows) {
+      const plainText = htmlToPlainText(row.texto);
+      const autores = authorsByArticle.get(row.article_id) ?? [];
+
+      let fragmento: string | null = null;
+
+      if (buscarEnTexto || usaProximidad) {
+        const ocurrencias = recopilarOcurrencias(plainText);
+        const ocurrenciasPalabra1 = ocurrencias.filter((o) => o.raiz === raizBuscada1);
+
+        if (usaProximidad) {
+          const ocurrenciasPalabra2 = ocurrencias.filter((o) => o.raiz === raizBuscada2);
+
+          let mejorPar: { a: OcurrenciaMorfologica; b: OcurrenciaMorfologica; separacion: number } | null = null;
+          for (const a of ocurrenciasPalabra1) {
+            for (const b of ocurrenciasPalabra2) {
+              const separacion = Math.abs(a.wordIndex - b.wordIndex);
+              if (separacion <= distancia! && (!mejorPar || separacion < mejorPar.separacion)) {
+                mejorPar = { a, b, separacion };
+              }
+            }
+          }
+
+          if (mejorPar) {
+            fragmento = construirFragmentoProximidad(plainText, mejorPar.a, mejorPar.b);
+          }
+        } else if (ocurrenciasPalabra1.length > 0) {
+          fragmento = construirFragmentoMorfologico(plainText, ocurrenciasPalabra1[0]);
+        }
+      }
+
+      const coincideEnTituloOAutor =
+        buscarEnTituloAutor &&
+        [row.articulo_titulo ?? '', ...autores].some((texto) =>
+          [...texto.matchAll(WORD_REGEX_MORFOLOGICA)].some(
+            (match) => raizMorfologica(match[0]) === raizBuscada1
+          )
+        );
+
+      if (fragmento === null && !coincideEnTituloOAutor) continue;
+
+      resultados.push({
+        id: row.article_id,
+        titulo: row.articulo_titulo,
+        slug: row.articulo_slug,
+        autores,
+        revista: row.revista_titulo,
+        revista_slug: row.revista_slug,
+        numero_orden: row.numero_orden,
+        año: row.anio,
+        fragmento: fragmento ?? row.articulo_titulo,
+      });
+    }
+
+    const total = resultados.length;
+    const pageCount = Math.ceil(total / pageSize);
+    const start = (page - 1) * pageSize;
+    const data = resultados.slice(start, start + pageSize);
+
+    return ctx.send({ data, meta: { total, page, pageSize, pageCount } });
   },
 };
 

@@ -50,11 +50,20 @@
     "metadatos_marc21": {
       "type": "text"
     },
+    "id_revista_legado": {
+      "type": "integer"
+    },
     "issues": {
       "type": "relation",
       "relation": "oneToMany",
       "target": "api::issue.issue",
       "mappedBy": "publication"
+    },
+    "directores": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::author.author",
+      "inversedBy": "revistas_dirigidas"
     }
   }
 }

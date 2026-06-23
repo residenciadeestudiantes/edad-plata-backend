@@ -35,11 +35,20 @@
       "multiple": false,
       "allowedTypes": ["images"]
     },
+    "id_autor_legado": {
+      "type": "integer"
+    },
     "articles": {
       "type": "relation",
       "relation": "manyToMany",
       "target": "api::article.article",
       "mappedBy": "authors"
+    },
+    "revistas_dirigidas": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::publication.publication",
+      "mappedBy": "directores"
     }
   }
 }
