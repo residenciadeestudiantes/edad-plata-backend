@@ -89,13 +89,17 @@ const STOPWORDS = new Set([
 ]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
-// letras Unicode), separado por espacios y sin stopwords.
-function tokenize(text: string): string[] {
-  return text
+// letras Unicode), separado por espacios. Filtra stopwords salvo que se pida
+// `incluirFuncionales` (el análisis estilométrico permite incluirlas, ya que
+// la frecuencia de palabras funcionales es en sí misma un rasgo de estilo).
+function tokenize(text: string, opciones: { incluirFuncionales?: boolean } = {}): string[] {
+  const tokens = text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
-    .filter((token) => token.length > 0 && !STOPWORDS.has(token));
+    .filter((token) => token.length > 0);
+
+  return opciones.incluirFuncionales ? tokens : tokens.filter((token) => !STOPWORDS.has(token));
 }
 
 interface EstilometriaAuthorRow {
@@ -188,11 +192,9 @@ interface PalabraFrecuencia {
 
 const TOP_PALABRAS_NUBE = 150;
 
-// Cuenta frecuencias de palabras (sin stopwords) en uno o varios textos HTML
-// y devuelve las más frecuentes en el formato {text, value} que espera
-// react-d3-cloud en el frontend.
-function contarFrecuencias(textos: (string | null)[]): PalabraFrecuencia[] {
-  const tokens = tokenize(textos.map(htmlToPlainText).join(' '));
+// Cuenta frecuencias de tokens ya tokenizados y devuelve las más frecuentes
+// en el formato {text, value} que espera react-d3-cloud en el frontend.
+function contarFrecuencias(tokens: string[]): PalabraFrecuencia[] {
   const conteo = new Map<string, number>();
   for (const token of tokens) {
     conteo.set(token, (conteo.get(token) ?? 0) + 1);
@@ -513,6 +515,8 @@ export default {
       return ctx.badRequest('"autor1" y "autor2" deben ser autores distintos.');
     }
 
+    const incluirFuncionales = ctx.query.incluirFuncionales === 'true';
+
     const knex = strapi.db.connection;
 
     async function cargarAutor(slug: string) {
@@ -550,8 +554,8 @@ export default {
     const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
     const texto2 = autor2Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
 
-    const tokens1 = tokenize(texto1);
-    const tokens2 = tokenize(texto2);
+    const tokens1 = tokenize(texto1, { incluirFuncionales });
+    const tokens2 = tokenize(texto2, { incluirFuncionales });
 
     if (tokens1.length === 0) {
       return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene texto suficiente para el análisis.`);
@@ -600,6 +604,10 @@ export default {
         autor1: palabrasAutor1,
         autor2: palabrasAutor2,
       },
+      nube_palabras: {
+        autor1: contarFrecuencias(tokens1),
+        autor2: contarFrecuencias(tokens2),
+      },
       interpretacion: interpretarDistancia(distanciaCoseno),
     });
   },
@@ -639,7 +647,7 @@ export default {
       .andWhere('p.published_at', 'is not', null)
       .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
-    const corpusCompleto = contarFrecuencias(filas.map((f) => f.texto));
+    const corpusCompleto = contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' ')));
 
     let revista: { slug: string; titulo: string; num_articulos: number; palabras: PalabraFrecuencia[] } | null =
       null;
@@ -657,7 +665,9 @@ export default {
           slug: revistaSlug,
           titulo: publicacion.titulo,
           num_articulos: filasRevista.length,
-          palabras: contarFrecuencias(filasRevista.map((f) => f.texto)),
+          palabras: contarFrecuencias(
+            tokenize(filasRevista.map((f) => htmlToPlainText(f.texto)).join(' '))
+          ),
         };
       }
     }
