@@ -30,5 +30,11 @@ export default {
       handler: 'analisis.nubePalabrasAutor',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/analisis/morfologica',
+      handler: 'analisis.morfologica',
+      config: { auth: false },
+    },
   ],
 };

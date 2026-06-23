@@ -4,6 +4,7 @@
 // que expone la misma interfaz JSON. El frontend no requerirá cambios.
 
 import type { Context } from 'koa';
+import { PorterStemmerEs } from 'natural';
 import {
   construirIndice,
   obtenerIndice,
@@ -75,6 +76,76 @@ function htmlToPlainText(html: string | null): string {
 
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+// Para la búsqueda con expansión morfológica: reduce una palabra a su raíz
+// (stemming en español). Cubre conjugaciones verbales y variantes de número
+// (cantar/cantaba/cantando, libro/libros) porque comparten la misma raíz,
+// pero NO familias derivativas con sufijos distintos sobre bases distintas
+// (libre/libertad/liberación) — para eso haría falta un diccionario de
+// sinónimos. Es la misma limitación que tendría el diccionario "spanish" de
+// PostgreSQL, que internamente también usa stemming Snowball.
+function raizMorfologica(palabra: string): string {
+  return PorterStemmerEs.stem(palabra.toLowerCase());
+}
+
+const WORD_REGEX_MORFOLOGICA = /[\p{L}\p{N}]+/gu;
+
+interface OcurrenciaMorfologica {
+  wordIndex: number;
+  charIndex: number;
+  texto: string;
+  raiz: string;
+}
+
+function recopilarOcurrencias(plainText: string): OcurrenciaMorfologica[] {
+  const ocurrencias: OcurrenciaMorfologica[] = [];
+  let wordIndex = 0;
+  for (const match of plainText.matchAll(WORD_REGEX_MORFOLOGICA)) {
+    ocurrencias.push({
+      wordIndex,
+      charIndex: match.index ?? 0,
+      texto: match[0],
+      raiz: raizMorfologica(match[0]),
+    });
+    wordIndex += 1;
+  }
+  return ocurrencias;
+}
+
+// Fragmento de contexto para una coincidencia de una sola palabra: idéntico
+// al de concordancias/buscar, con la palabra encontrada entre **asteriscos**.
+function construirFragmentoMorfologico(plainText: string, ocurrencia: OcurrenciaMorfologica): string {
+  const start = Math.max(0, ocurrencia.charIndex - CONTEXT_CHARS);
+  const end = Math.min(plainText.length, ocurrencia.charIndex + ocurrencia.texto.length + CONTEXT_CHARS);
+  const antes = collapseWhitespace(plainText.slice(start, ocurrencia.charIndex));
+  const despues = collapseWhitespace(
+    plainText.slice(ocurrencia.charIndex + ocurrencia.texto.length, end)
+  );
+  return `${antes} **${ocurrencia.texto}** ${despues}`.trim();
+}
+
+// Fragmento de contexto para una coincidencia de proximidad entre dos
+// palabras: abarca desde la primera ocurrencia (en orden de aparición en el
+// texto) hasta la segunda, con ambas resaltadas entre **asteriscos**.
+function construirFragmentoProximidad(
+  plainText: string,
+  ocurrenciaA: OcurrenciaMorfologica,
+  ocurrenciaB: OcurrenciaMorfologica
+): string {
+  const primera = ocurrenciaA.charIndex <= ocurrenciaB.charIndex ? ocurrenciaA : ocurrenciaB;
+  const segunda = ocurrenciaA.charIndex <= ocurrenciaB.charIndex ? ocurrenciaB : ocurrenciaA;
+
+  const start = Math.max(0, primera.charIndex - CONTEXT_CHARS);
+  const end = Math.min(plainText.length, segunda.charIndex + segunda.texto.length + CONTEXT_CHARS);
+
+  const antes = collapseWhitespace(plainText.slice(start, primera.charIndex));
+  const entre = collapseWhitespace(
+    plainText.slice(primera.charIndex + primera.texto.length, segunda.charIndex)
+  );
+  const despues = collapseWhitespace(plainText.slice(segunda.charIndex + segunda.texto.length, end));
+
+  return `${antes} **${primera.texto}** ${entre} **${segunda.texto}** ${despues}`.trim();
 }
 
 // Stopwords del español para el análisis estilométrico (TF-IDF). A diferencia
@@ -946,6 +1017,187 @@ export default {
         totalTokens: indice.totalTokens,
       },
     });
+  },
+
+  // Búsqueda con expansión morfológica: reduce la palabra (o las dos
+  // palabras) buscada(s) y cada palabra del texto a su raíz para encontrar
+  // también conjugaciones y variantes de número, no solo la forma literal
+  // escrita. Si se indican `palabra2` y `distancia`, en vez de ocurrencias
+  // sueltas de `palabra`, busca artículos donde una ocurrencia de `palabra`
+  // y otra de `palabra2` aparezcan a un máximo de `distancia` palabras de
+  // separación en el cuerpo del artículo (la búsqueda de proximidad no se
+  // aplica al ámbito título/autor, que no es prosa continua).
+  async morfologica(ctx: Context) {
+    const palabraRaw = typeof ctx.query.palabra === 'string' ? ctx.query.palabra.trim() : '';
+    if (palabraRaw.length < 3) {
+      return ctx.badRequest('El parámetro "palabra" debe tener al menos 3 caracteres.');
+    }
+
+    const palabra2Raw = typeof ctx.query.palabra2 === 'string' ? ctx.query.palabra2.trim() : '';
+    const distanciaRaw = typeof ctx.query.distancia === 'string' ? ctx.query.distancia.trim() : '';
+
+    if (palabra2Raw.length > 0 && (palabra2Raw.length < 3 || !/^\d+$/.test(distanciaRaw))) {
+      return ctx.badRequest(
+        'Para buscar por proximidad, indica una segunda palabra de al menos 3 caracteres y una distancia (en número de palabras).'
+      );
+    }
+
+    const usaProximidad = palabra2Raw.length >= 3 && /^\d+$/.test(distanciaRaw);
+    const distancia = usaProximidad ? Number(distanciaRaw) : null;
+
+    const page = Math.max(1, Number(ctx.query.page) || 1);
+    const pageSize = Math.max(1, Number(ctx.query.pageSize) || 20);
+
+    const buscarEnTituloAutor = !usaProximidad && ctx.query.enTituloAutor !== 'false';
+    const buscarEnTexto = ctx.query.enTexto !== 'false';
+
+    if (!usaProximidad && !buscarEnTituloAutor && !buscarEnTexto) {
+      return ctx.badRequest('Selecciona al menos un ámbito de búsqueda (título/autor o texto).');
+    }
+
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    const autorSlug = typeof ctx.query.autor === 'string' ? ctx.query.autor.trim() : '';
+    const desdeRaw = typeof ctx.query.desde === 'string' ? ctx.query.desde.trim() : '';
+    const hastaRaw = typeof ctx.query.hasta === 'string' ? ctx.query.hasta.trim() : '';
+    const desde = desdeRaw && /^\d+$/.test(desdeRaw) ? Number(desdeRaw) : null;
+    const hasta = hastaRaw && /^\d+$/.test(hastaRaw) ? Number(hastaRaw) : null;
+
+    const knex = strapi.db.connection;
+
+    let articlesQuery = knex('articles as a')
+      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+      .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+      .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+      .where('a.published_at', 'is not', null)
+      .andWhere('i.published_at', 'is not', null)
+      .andWhere('p.published_at', 'is not', null);
+
+    if (revistaSlug) {
+      articlesQuery = articlesQuery.andWhere('p.slug', revistaSlug);
+    }
+    if (desde !== null) {
+      articlesQuery = articlesQuery.andWhere('i.ano', '>=', desde);
+    }
+    if (hasta !== null) {
+      articlesQuery = articlesQuery.andWhere('i.ano', '<=', hasta);
+    }
+
+    if (autorSlug) {
+      const authorArticleIds: number[] = await knex('articles_authors_lnk as aal')
+        .innerJoin('authors as au', 'au.id', 'aal.author_id')
+        .where('au.slug', autorSlug)
+        .andWhere('au.published_at', 'is not', null)
+        .pluck('aal.article_id');
+
+      articlesQuery = articlesQuery.whereIn('a.id', authorArticleIds.length > 0 ? authorArticleIds : [-1]);
+    }
+
+    const articleRows: ArticleRow[] = await articlesQuery.select(
+      'a.id as article_id',
+      'a.titulo as articulo_titulo',
+      'a.slug as articulo_slug',
+      'a.texto as texto',
+      'i.numero_orden as numero_orden',
+      'i.ano as anio',
+      'p.titulo as revista_titulo',
+      'p.slug as revista_slug'
+    );
+
+    if (articleRows.length === 0) {
+      return ctx.send({ data: [], meta: { total: 0, page, pageSize, pageCount: 0 } });
+    }
+
+    const articleIds = articleRows.map((row) => row.article_id);
+
+    const authorRows: { article_id: number; nombre: string }[] = await knex('articles_authors_lnk as aal')
+      .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .whereIn('aal.article_id', articleIds)
+      .andWhere('au.published_at', 'is not', null)
+      .select('aal.article_id as article_id', 'au.nombre as nombre');
+
+    const authorsByArticle = new Map<number, string[]>();
+    for (const row of authorRows) {
+      const list = authorsByArticle.get(row.article_id) ?? [];
+      list.push(row.nombre);
+      authorsByArticle.set(row.article_id, list);
+    }
+
+    const raizBuscada1 = raizMorfologica(palabraRaw);
+    const raizBuscada2 = usaProximidad ? raizMorfologica(palabra2Raw) : null;
+
+    const resultados: {
+      id: number;
+      titulo: string;
+      slug: string;
+      autores: string[];
+      revista: string;
+      revista_slug: string;
+      numero_orden: number | null;
+      año: number | null;
+      fragmento: string;
+    }[] = [];
+
+    for (const row of articleRows) {
+      const plainText = htmlToPlainText(row.texto);
+      const autores = authorsByArticle.get(row.article_id) ?? [];
+
+      let fragmento: string | null = null;
+
+      if (buscarEnTexto || usaProximidad) {
+        const ocurrencias = recopilarOcurrencias(plainText);
+        const ocurrenciasPalabra1 = ocurrencias.filter((o) => o.raiz === raizBuscada1);
+
+        if (usaProximidad) {
+          const ocurrenciasPalabra2 = ocurrencias.filter((o) => o.raiz === raizBuscada2);
+
+          let mejorPar: { a: OcurrenciaMorfologica; b: OcurrenciaMorfologica; separacion: number } | null = null;
+          for (const a of ocurrenciasPalabra1) {
+            for (const b of ocurrenciasPalabra2) {
+              const separacion = Math.abs(a.wordIndex - b.wordIndex);
+              if (separacion <= distancia! && (!mejorPar || separacion < mejorPar.separacion)) {
+                mejorPar = { a, b, separacion };
+              }
+            }
+          }
+
+          if (mejorPar) {
+            fragmento = construirFragmentoProximidad(plainText, mejorPar.a, mejorPar.b);
+          }
+        } else if (ocurrenciasPalabra1.length > 0) {
+          fragmento = construirFragmentoMorfologico(plainText, ocurrenciasPalabra1[0]);
+        }
+      }
+
+      const coincideEnTituloOAutor =
+        buscarEnTituloAutor &&
+        [row.articulo_titulo ?? '', ...autores].some((texto) =>
+          [...texto.matchAll(WORD_REGEX_MORFOLOGICA)].some(
+            (match) => raizMorfologica(match[0]) === raizBuscada1
+          )
+        );
+
+      if (fragmento === null && !coincideEnTituloOAutor) continue;
+
+      resultados.push({
+        id: row.article_id,
+        titulo: row.articulo_titulo,
+        slug: row.articulo_slug,
+        autores,
+        revista: row.revista_titulo,
+        revista_slug: row.revista_slug,
+        numero_orden: row.numero_orden,
+        año: row.anio,
+        fragmento: fragmento ?? row.articulo_titulo,
+      });
+    }
+
+    const total = resultados.length;
+    const pageCount = Math.ceil(total / pageSize);
+    const start = (page - 1) * pageSize;
+    const data = resultados.slice(start, start + pageSize);
+
+    return ctx.send({ data, meta: { total, page, pageSize, pageCount } });
   },
 };
 
