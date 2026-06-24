@@ -27,6 +27,13 @@
     "idioma": {
       "type": "string"
     },
+    "es_anuncio": {
+      "type": "boolean",
+      "default": false
+    },
+    "texto_ocr_anuncios": {
+      "type": "text"
+    },
     "posicion": {
       "type": "integer"
     },

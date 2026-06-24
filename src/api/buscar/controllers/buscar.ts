@@ -140,7 +140,8 @@ export default {
       .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
-      .andWhere('p.published_at', 'is not', null);
+      .andWhere('p.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
       articlesQuery = articlesQuery.andWhere('p.slug', revistaSlug);
