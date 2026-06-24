@@ -18,6 +18,36 @@ function parseAutorIds(value) {
     .map(Number);
 }
 
+function parseNombres(value) {
+  if (!value) return [];
+  return String(value)
+    .split(';')
+    .map((nombre) => nombre.trim())
+    .filter(Boolean);
+}
+
+function slugify(text) {
+  return text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+async function findOrCreateMateria(app, nombre) {
+  const existing = await app.documents('api::materia.materia').findFirst({
+    filters: { nombre: { $eqi: nombre } },
+  });
+  if (existing) return existing.documentId;
+
+  const created = await app.documents('api::materia.materia').create({
+    data: { nombre, slug: slugify(nombre) },
+    status: 'published',
+  });
+  return created.documentId;
+}
+
 async function main() {
   const workbook = XLSX.readFile(EXCEL_PATH);
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -69,6 +99,12 @@ async function main() {
       return author.documentId;
     });
 
+    const materiaNombres = parseNombres(row['Materia']);
+    const materias = [];
+    for (const nombre of materiaNombres) {
+      materias.push(await findOrCreateMateria(app, nombre));
+    }
+
     const data = {
       directores,
       impresores,
@@ -78,7 +114,7 @@ async function main() {
       fecha_primer_numero: row['Fecha primer número'] ? `${row['Fecha primer número']}-01-01` : undefined,
       fecha_ultimo_numero: row['Fecha último número'] ? `${row['Fecha último número']}-01-01` : undefined,
       notas: row['Notas'] ?? undefined,
-      materia: row['Materia'] ?? undefined,
+      materias: materiaNombres.length > 0 ? materias : undefined,
       idioma: row['Idioma'] ?? undefined,
     };
 

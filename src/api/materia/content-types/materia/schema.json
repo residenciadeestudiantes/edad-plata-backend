@@ -1,0 +1,32 @@
+{
+  "kind": "collectionType",
+  "collectionName": "materias",
+  "info": {
+    "singularName": "materia",
+    "pluralName": "materias",
+    "displayName": "Materia",
+    "description": "Palabra clave temática de una revista de la Edad de Plata española, usada para filtrar el catálogo"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "nombre": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "nombre",
+      "required": true
+    },
+    "publicaciones": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::publication.publication",
+      "mappedBy": "materias"
+    }
+  }
+}
