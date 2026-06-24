@@ -353,7 +353,8 @@ export default {
       .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
-      .andWhere('p.published_at', 'is not', null);
+      .andWhere('p.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
       articlesQuery = articlesQuery.andWhere('p.slug', revistaSlug);
@@ -605,6 +606,7 @@ export default {
         .where('au.slug', slug)
         .andWhere('au.published_at', 'is not', null)
         .andWhere('a.published_at', 'is not', null)
+        .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
         .select('a.texto as texto');
 
       return { author, articleRows };
@@ -716,6 +718,7 @@ export default {
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
     const corpusCompleto = contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' ')));
@@ -785,6 +788,7 @@ export default {
       .innerJoin('articles as a', 'a.id', 'aal.article_id')
       .where('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto');
 
     const textosPorAutor = new Map<string, string[]>();
@@ -821,6 +825,7 @@ export default {
       .andWhere('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
 
     const aniosPorAutor = new Map<string, Map<number, string[]>>();
@@ -1071,7 +1076,8 @@ export default {
       .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
-      .andWhere('p.published_at', 'is not', null);
+      .andWhere('p.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
       articlesQuery = articlesQuery.andWhere('p.slug', revistaSlug);

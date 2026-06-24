@@ -121,6 +121,7 @@ export async function construirIndice(strapiInstance: {
   for (;;) {
     const idsPagina: { id: number }[] = await knex('articles as a')
       .where('a.published_at', 'is not', null)
+      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .orderBy('a.id')
       .offset(offset)
       .limit(TAMAÑO_PAGINA)
