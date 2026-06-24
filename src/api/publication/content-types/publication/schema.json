@@ -68,6 +68,12 @@
     "issn": {
       "type": "string"
     },
+    "materia": {
+      "type": "string"
+    },
+    "idioma": {
+      "type": "string"
+    },
     "issues": {
       "type": "relation",
       "relation": "oneToMany",
