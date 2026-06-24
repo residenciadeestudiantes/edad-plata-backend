@@ -753,6 +753,63 @@ export default {
     });
   },
 
+  // Nube de palabras de todo el contenido publicado de una revista, con la
+  // opción de comparar con otra revista (misma lógica que nubePalabrasAutor,
+  // pero a nivel de publicación en vez de autor).
+  async nubePalabrasRevista(ctx: Context) {
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    if (!revistaSlug) {
+      return ctx.badRequest('El parámetro "revista" es obligatorio.');
+    }
+    const compararSlug = typeof ctx.query.comparar === 'string' ? ctx.query.comparar.trim() : '';
+
+    const knex = strapi.db.connection;
+
+    async function cargarRevista(slug: string) {
+      const publicacion: { titulo: string } | undefined = await knex('publications')
+        .where('slug', slug)
+        .andWhere('published_at', 'is not', null)
+        .select('titulo')
+        .first();
+
+      if (!publicacion) return null;
+
+      const filas: { texto: string | null }[] = await knex('articles as a')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+        .where('p.slug', slug)
+        .andWhere('a.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .andWhere('p.published_at', 'is not', null)
+        .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
+        .select('a.texto as texto');
+
+      return {
+        slug,
+        titulo: publicacion.titulo,
+        num_articulos: filas.length,
+        palabras: contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' '))),
+      };
+    }
+
+    const revista = await cargarRevista(revistaSlug);
+    if (!revista) {
+      return ctx.notFound(`No se ha encontrado la revista "${revistaSlug}".`);
+    }
+
+    let comparar: Awaited<ReturnType<typeof cargarRevista>> = null;
+    if (compararSlug) {
+      comparar = await cargarRevista(compararSlug);
+      if (!comparar) {
+        return ctx.notFound(`No se ha encontrado la revista "${compararSlug}".`);
+      }
+    }
+
+    return ctx.send({ revista, comparar });
+  },
+
   async innovacion(ctx: Context) {
     const autoresRaw = typeof ctx.query.autores === 'string' ? ctx.query.autores : '';
     const slugsSolicitados = [
