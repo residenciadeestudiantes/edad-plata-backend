@@ -42,5 +42,29 @@ export default {
       handler: 'analisis.morfologica',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/analisis/publicidad/frecuencia',
+      handler: 'analisis.publicidadFrecuencia',
+      config: { auth: false },
+    },
+    {
+      method: 'GET',
+      path: '/analisis/publicidad/tecnologia',
+      handler: 'analisis.publicidadTecnologia',
+      config: { auth: false },
+    },
+    {
+      method: 'GET',
+      path: '/analisis/publicidad/cadenas-lexicas',
+      handler: 'analisis.publicidadCadenasLexicas',
+      config: { auth: false },
+    },
+    {
+      method: 'GET',
+      path: '/analisis/publicidad/vanguardia',
+      handler: 'analisis.publicidadVanguardia',
+      config: { auth: false },
+    },
   ],
 };
