@@ -32,6 +32,12 @@ export default {
     },
     {
       method: 'GET',
+      path: '/analisis/nube-palabras-revista',
+      handler: 'analisis.nubePalabrasRevista',
+      config: { auth: false },
+    },
+    {
+      method: 'GET',
       path: '/analisis/morfologica',
       handler: 'analisis.morfologica',
       config: { auth: false },

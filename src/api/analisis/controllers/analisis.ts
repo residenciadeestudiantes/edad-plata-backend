@@ -13,6 +13,7 @@ import {
   calcularEntropiaShannon,
   type ProbabilidadToken,
 } from '../services/bigramas';
+import { STOPWORDS } from '../services/stopwords';
 
 interface ArticleRow {
   article_id: number;
@@ -147,17 +148,6 @@ function construirFragmentoProximidad(
 
   return `${antes} **${primera.texto}** ${entre} **${segunda.texto}** ${despues}`.trim();
 }
-
-// Stopwords del español para el análisis estilométrico (TF-IDF). A diferencia
-// de `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
-// tildes: la tokenización de este endpoint no pliega diacríticos.
-const STOPWORDS = new Set([
-  'de', 'la', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un',
-  'para', 'con', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le',
-  'ya', 'o', 'este', 'sí', 'porque', 'esta', 'entre', 'cuando', 'muy', 'sin',
-  'sobre', 'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo',
-  'nos', 'durante', 'estados', 'todos', 'uno', 'les', 'ni', 'contra',
-]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
 // letras Unicode), separado por espacios. Filtra stopwords salvo que se pida
@@ -317,6 +307,7 @@ function interpretarEntropia(entropiaNormalizada: number, fiable: boolean): Inte
 interface CadenasLexicasAutorRespuesta {
   slug: string;
   sinDatos?: boolean;
+  sinArticulosEnEspanol?: boolean;
   sucesores?: (ProbabilidadToken & { probabilidadCorpus: number; desviacion: number })[];
   predecesores?: ProbabilidadToken[];
   entropia?: number;
@@ -354,6 +345,7 @@ export default {
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
@@ -606,6 +598,7 @@ export default {
         .where('au.slug', slug)
         .andWhere('au.published_at', 'is not', null)
         .andWhere('a.published_at', 'is not', null)
+        .andWhere('a.idioma', 'Español')
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
         .select('a.texto as texto');
 
@@ -622,6 +615,13 @@ export default {
     }
     if (!autor2Data) {
       return ctx.notFound(`No se ha encontrado el autor "${autor2Slug}".`);
+    }
+
+    if (autor1Data.articleRows.length === 0) {
+      return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene artículos en español.`);
+    }
+    if (autor2Data.articleRows.length === 0) {
+      return ctx.badRequest(`El autor "${autor2Data.author.nombre}" no tiene artículos en español.`);
     }
 
     const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
@@ -718,6 +718,7 @@ export default {
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
@@ -751,6 +752,64 @@ export default {
       corpus_completo: corpusCompleto,
       revista,
     });
+  },
+
+  // Nube de palabras de todo el contenido publicado de una revista, con la
+  // opción de comparar con otra revista (misma lógica que nubePalabrasAutor,
+  // pero a nivel de publicación en vez de autor).
+  async nubePalabrasRevista(ctx: Context) {
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    if (!revistaSlug) {
+      return ctx.badRequest('El parámetro "revista" es obligatorio.');
+    }
+    const compararSlug = typeof ctx.query.comparar === 'string' ? ctx.query.comparar.trim() : '';
+
+    const knex = strapi.db.connection;
+
+    async function cargarRevista(slug: string) {
+      const publicacion: { titulo: string } | undefined = await knex('publications')
+        .where('slug', slug)
+        .andWhere('published_at', 'is not', null)
+        .select('titulo')
+        .first();
+
+      if (!publicacion) return null;
+
+      const filas: { texto: string | null }[] = await knex('articles as a')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+        .where('p.slug', slug)
+        .andWhere('a.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .andWhere('p.published_at', 'is not', null)
+        .andWhere('a.idioma', 'Español')
+        .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
+        .select('a.texto as texto');
+
+      return {
+        slug,
+        titulo: publicacion.titulo,
+        num_articulos: filas.length,
+        palabras: contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' '))),
+      };
+    }
+
+    const revista = await cargarRevista(revistaSlug);
+    if (!revista) {
+      return ctx.notFound(`No se ha encontrado la revista "${revistaSlug}".`);
+    }
+
+    let comparar: Awaited<ReturnType<typeof cargarRevista>> = null;
+    if (compararSlug) {
+      comparar = await cargarRevista(compararSlug);
+      if (!comparar) {
+        return ctx.notFound(`No se ha encontrado la revista "${compararSlug}".`);
+      }
+    }
+
+    return ctx.send({ revista, comparar });
   },
 
   async innovacion(ctx: Context) {
@@ -788,6 +847,7 @@ export default {
       .innerJoin('articles as a', 'a.id', 'aal.article_id')
       .where('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto');
 
@@ -825,6 +885,7 @@ export default {
       .andWhere('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
 
@@ -894,9 +955,11 @@ export default {
         color: COLORES_INNOVACION[indice] ?? '#6b7280',
         num_articulos: numArticulos,
         aviso_pocos_datos:
-          numArticulos < UMBRAL_POCOS_ARTICULOS_AUTOR
-            ? `Este autor tiene solo ${numArticulos} artículo(s) publicado(s); los resultados pueden ser poco fiables.`
-            : null,
+          numArticulos === 0
+            ? 'Este autor no tiene artículos en español.'
+            : numArticulos < UMBRAL_POCOS_ARTICULOS_AUTOR
+              ? `Este autor tiene solo ${numArticulos} artículo(s) publicado(s); los resultados pueden ser poco fiables.`
+              : null,
         trayectoria,
       };
     });
@@ -965,10 +1028,13 @@ export default {
     let autor: CadenasLexicasAutorRespuesta | null = null;
 
     if (autorSlug) {
+      const tieneArticulosEnEspanol = indice.frecuenciasAutor.has(autorSlug);
       const frecAutorMap = indice.frecuenciasAutor.get(autorSlug) ?? new Map<string, number>();
       const frecuenciaTotalAutor = frecAutorMap.get(palabra) ?? 0;
 
-      if (frecuenciaTotalAutor === 0) {
+      if (!tieneArticulosEnEspanol) {
+        autor = { slug: autorSlug, sinDatos: true, sinArticulosEnEspanol: true };
+      } else if (frecuenciaTotalAutor === 0) {
         autor = { slug: autorSlug, sinDatos: true };
       } else {
         const indiceSucesoresAutor =
@@ -1077,6 +1143,7 @@ export default {
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
