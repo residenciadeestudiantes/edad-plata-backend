@@ -13,6 +13,7 @@ import {
   calcularEntropiaShannon,
   type ProbabilidadToken,
 } from '../services/bigramas';
+import { STOPWORDS } from '../services/stopwords';
 
 interface ArticleRow {
   article_id: number;
@@ -147,17 +148,6 @@ function construirFragmentoProximidad(
 
   return `${antes} **${primera.texto}** ${entre} **${segunda.texto}** ${despues}`.trim();
 }
-
-// Stopwords del español para el análisis estilométrico (TF-IDF). A diferencia
-// de `stripDiacritics` (usado en concordancias), aquí SÍ se conservan las
-// tildes: la tokenización de este endpoint no pliega diacríticos.
-const STOPWORDS = new Set([
-  'de', 'la', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un',
-  'para', 'con', 'una', 'su', 'al', 'lo', 'como', 'más', 'pero', 'sus', 'le',
-  'ya', 'o', 'este', 'sí', 'porque', 'esta', 'entre', 'cuando', 'muy', 'sin',
-  'sobre', 'también', 'me', 'hasta', 'hay', 'donde', 'quien', 'desde', 'todo',
-  'nos', 'durante', 'estados', 'todos', 'uno', 'les', 'ni', 'contra',
-]);
 
 // Tokeniza un texto en minúsculas, sin puntuación (conservando tildes y
 // letras Unicode), separado por espacios. Filtra stopwords salvo que se pida

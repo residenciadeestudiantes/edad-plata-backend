@@ -19,10 +19,12 @@ export const STOPWORDS = new Set([
   // Demostrativos
   'este', 'esta', 'estos', 'estas', 'esto', 'ese', 'esa', 'esos', 'esas',
   'eso', 'aquel', 'aquella', 'aquellos', 'aquellas', 'aquello',
-  // Relativos e interrogativos
-  'que', 'quien', 'quienes', 'cual', 'cuales', 'cuyo', 'cuya', 'cuyos',
-  'cuyas', 'donde', 'cuando', 'como', 'cuanto', 'cuanta', 'cuantos',
-  'cuantas',
+  // Relativos e interrogativos (con y sin tilde: "que" relativo, "qué"
+  // interrogativo/exclamativo)
+  'que', 'qué', 'quien', 'quienes', 'quién', 'quiénes', 'cual', 'cuales',
+  'cuál', 'cuáles', 'cuyo', 'cuya', 'cuyos', 'cuyas', 'donde', 'dónde',
+  'cuando', 'cuándo', 'como', 'cómo', 'cuanto', 'cuanta', 'cuantos',
+  'cuantas', 'cuánto', 'cuánta', 'cuántos', 'cuántas',
   // Indefinidos
   'alguien', 'algo', 'nadie', 'nada', 'alguno', 'alguna', 'algunos',
   'algunas', 'ninguno', 'ninguna', 'ningunos', 'ningunas', 'cualquier',
@@ -37,4 +39,17 @@ export const STOPWORDS = new Set([
   'y', 'e', 'ni', 'o', 'u', 'pero', 'mas', 'sino', 'aunque', 'porque',
   'pues', 'si', 'ya', 'muy', 'más', 'menos', 'también', 'tampoco', 'no',
   'tan', 'tanto', 'hay',
+  // Formas de ser, estar y haber (verbos copulativos/auxiliares, sin valor
+  // temático propio)
+  'ser', 'soy', 'eres', 'es', 'somos', 'sois', 'son', 'era', 'eras', 'éramos',
+  'eran', 'fui', 'fue', 'fuimos', 'fueron', 'seré', 'será', 'seremos',
+  'serán', 'sea', 'seamos', 'sean', 'siendo', 'sido',
+  'estar', 'estoy', 'estás', 'está', 'estamos', 'estáis', 'están', 'estaba',
+  'estabas', 'estábamos', 'estaban', 'estuve', 'estuvo', 'estuvimos',
+  'estuvieron', 'estaré', 'estará', 'estaremos', 'estarán', 'esté',
+  'estemos', 'estén', 'estando', 'estado',
+  'haber', 'he', 'has', 'ha', 'hemos', 'habéis', 'han', 'había', 'habías',
+  'habíamos', 'habían', 'hube', 'hubo', 'hubimos', 'hubieron', 'habré',
+  'habrá', 'habremos', 'habrán', 'haya', 'hayamos', 'hayan', 'habiendo',
+  'habido',
 ]);
