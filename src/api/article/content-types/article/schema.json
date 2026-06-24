@@ -24,6 +24,9 @@
     "texto": {
       "type": "text"
     },
+    "idioma": {
+      "type": "string"
+    },
     "posicion": {
       "type": "integer"
     },

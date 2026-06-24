@@ -49,6 +49,12 @@
       "relation": "manyToMany",
       "target": "api::publication.publication",
       "mappedBy": "directores"
+    },
+    "revistas_impresas": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::publication.publication",
+      "mappedBy": "impresores"
     }
   }
 }
