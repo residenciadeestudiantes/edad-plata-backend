@@ -307,6 +307,7 @@ function interpretarEntropia(entropiaNormalizada: number, fiable: boolean): Inte
 interface CadenasLexicasAutorRespuesta {
   slug: string;
   sinDatos?: boolean;
+  sinArticulosEnEspanol?: boolean;
   sucesores?: (ProbabilidadToken & { probabilidadCorpus: number; desviacion: number })[];
   predecesores?: ProbabilidadToken[];
   entropia?: number;
@@ -344,6 +345,7 @@ export default {
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
@@ -596,6 +598,7 @@ export default {
         .where('au.slug', slug)
         .andWhere('au.published_at', 'is not', null)
         .andWhere('a.published_at', 'is not', null)
+        .andWhere('a.idioma', 'Español')
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
         .select('a.texto as texto');
 
@@ -612,6 +615,13 @@ export default {
     }
     if (!autor2Data) {
       return ctx.notFound(`No se ha encontrado el autor "${autor2Slug}".`);
+    }
+
+    if (autor1Data.articleRows.length === 0) {
+      return ctx.badRequest(`El autor "${autor1Data.author.nombre}" no tiene artículos en español.`);
+    }
+    if (autor2Data.articleRows.length === 0) {
+      return ctx.badRequest(`El autor "${autor2Data.author.nombre}" no tiene artículos en español.`);
     }
 
     const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
@@ -708,6 +718,7 @@ export default {
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
@@ -773,6 +784,7 @@ export default {
         .andWhere('a.published_at', 'is not', null)
         .andWhere('i.published_at', 'is not', null)
         .andWhere('p.published_at', 'is not', null)
+        .andWhere('a.idioma', 'Español')
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
         .select('a.texto as texto');
 
@@ -835,6 +847,7 @@ export default {
       .innerJoin('articles as a', 'a.id', 'aal.article_id')
       .where('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto');
 
@@ -872,6 +885,7 @@ export default {
       .andWhere('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
 
@@ -941,9 +955,11 @@ export default {
         color: COLORES_INNOVACION[indice] ?? '#6b7280',
         num_articulos: numArticulos,
         aviso_pocos_datos:
-          numArticulos < UMBRAL_POCOS_ARTICULOS_AUTOR
-            ? `Este autor tiene solo ${numArticulos} artículo(s) publicado(s); los resultados pueden ser poco fiables.`
-            : null,
+          numArticulos === 0
+            ? 'Este autor no tiene artículos en español.'
+            : numArticulos < UMBRAL_POCOS_ARTICULOS_AUTOR
+              ? `Este autor tiene solo ${numArticulos} artículo(s) publicado(s); los resultados pueden ser poco fiables.`
+              : null,
         trayectoria,
       };
     });
@@ -1012,10 +1028,13 @@ export default {
     let autor: CadenasLexicasAutorRespuesta | null = null;
 
     if (autorSlug) {
+      const tieneArticulosEnEspanol = indice.frecuenciasAutor.has(autorSlug);
       const frecAutorMap = indice.frecuenciasAutor.get(autorSlug) ?? new Map<string, number>();
       const frecuenciaTotalAutor = frecAutorMap.get(palabra) ?? 0;
 
-      if (frecuenciaTotalAutor === 0) {
+      if (!tieneArticulosEnEspanol) {
+        autor = { slug: autorSlug, sinDatos: true, sinArticulosEnEspanol: true };
+      } else if (frecuenciaTotalAutor === 0) {
         autor = { slug: autorSlug, sinDatos: true };
       } else {
         const indiceSucesoresAutor =
@@ -1124,6 +1143,7 @@ export default {
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
+      .andWhere('a.idioma', 'Español')
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
