@@ -53,6 +53,21 @@
     "id_revista_legado": {
       "type": "integer"
     },
+    "periodicidad": {
+      "type": "string"
+    },
+    "numeros_publicados": {
+      "type": "integer"
+    },
+    "fecha_primer_numero": {
+      "type": "date"
+    },
+    "fecha_ultimo_numero": {
+      "type": "date"
+    },
+    "issn": {
+      "type": "string"
+    },
     "issues": {
       "type": "relation",
       "relation": "oneToMany",
@@ -64,6 +79,12 @@
       "relation": "manyToMany",
       "target": "api::author.author",
       "inversedBy": "revistas_dirigidas"
+    },
+    "impresores": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::author.author",
+      "inversedBy": "revistas_impresas"
     }
   }
 }
