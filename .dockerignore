@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+.tmp
+excels
+public/uploads
+dist
+build
+.strapi
+.strapi-updater.json
+*.log

@@ -7,6 +7,12 @@ justificación en la conversación que dio lugar a este documento; aquí solo
 se cubre lo que sí hay que cambiar: base de datos, almacenamiento de
 ficheros, variables de entorno y TLS.
 
+> 🐳 **¿Vas a desplegar con Docker en un servidor on-prem?** Hay una guía
+> paso a paso ya lista, con `docker-compose` (Postgres + backend + frontend
+> + Caddy con HTTPS automático vía Let's Encrypt): ver
+> [`deploy/README.md`](../deploy/README.md). Este documento explica el
+> *por qué* de cada pieza; ese otro es el *cómo* concreto para ese caso.
+
 ## 1. Base de datos: SQLite → PostgreSQL
 
 SQLite (el valor por defecto en desarrollo) no es apto para tráfico web
@@ -86,7 +92,11 @@ Dos opciones, según dónde despliegues:
   y configurarlo en `config/plugins.ts`. Requiere credenciales del bucket
   como variables de entorno nuevas.
 
-(Pendiente de decidir según la plataforma de hosting elegida.)
+**Decisión para el despliegue Docker on-prem** (`deploy/`): disco
+persistente, vía un volumen Docker con nombre
+(`backend_uploads:/app/public/uploads` en `deploy/docker-compose.yml`).
+Sobrevive a `docker compose up --build` y a reinicios del servidor; solo se
+pierde si se borra explícitamente el volumen (`docker compose down -v`).
 
 ## 3. HTTPS
 
@@ -97,6 +107,11 @@ plano sobre `HOST`/`PORT`. El HTTPS lo aporta la capa delante:
   certificado (p. ej. Let's Encrypt) y que reenvíe a `http://localhost:1337`.
 - O la **terminación TLS del propio proveedor** (la mayoría de PaaS la dan
   gratis y automática delante de la app).
+
+**Decisión para el despliegue Docker on-prem:** Caddy, en su propio
+contenedor (`deploy/docker-compose.yml` + `deploy/Caddyfile`). Caddy
+obtiene y renueva los certificados de Let's Encrypt automáticamente para
+los dominios configurados, sin pasos manuales de certbot.
 
 Sea cual sea, hay que indicarle a Strapi su URL pública real (para que
 genere bien las URLs de los ficheros subidos y el panel de admin):

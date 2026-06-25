@@ -1,0 +1,11 @@
+{
+	email {$LETSENCRYPT_EMAIL}
+}
+
+{$DOMAIN_APP} {
+	reverse_proxy frontend:3000
+}
+
+{$DOMAIN_API} {
+	reverse_proxy backend:1337
+}
