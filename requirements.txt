@@ -1,0 +1,12 @@
+# Entorno Python opcional, solo para inspeccionar los .xlsx de excels/
+# antes de escribir o ajustar los scripts de importación (seed-*.js). El
+# proyecto en sí (Strapi) es 100% Node.js; esto no es una dependencia para
+# arrancar ni desplegar el backend.
+#
+# Uso:
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#   python3 -c "import openpyxl; wb = openpyxl.load_workbook('excels/archivo.xlsx'); ..."
+
+openpyxl==3.1.5

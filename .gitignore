@@ -124,6 +124,15 @@ coverage
 excels
 
 ############################
+# Python (solo para inspeccionar excels/, ver requirements.txt)
+############################
+
+.venv
+venv
+__pycache__
+*.pyc
+
+############################
 # Strapi
 ############################
 
