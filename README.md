@@ -77,4 +77,6 @@ contribuir abriendo un PR desde un fork contra `develop`.
 
 - [`docs/analisis-cientifico.md`](./docs/analisis-cientifico.md) — metodología
   de los análisis filológicos/estadísticos.
+- [`docs/despliegue-produccion.md`](./docs/despliegue-produccion.md) — migración
+  de SQLite a PostgreSQL, almacenamiento de ficheros, HTTPS y CORS para producción.
 - [`GIT_FLOW.md`](./GIT_FLOW.md) — flujo de ramas.
