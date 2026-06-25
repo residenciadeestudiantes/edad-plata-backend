@@ -23,6 +23,11 @@ RUN apk add --no-cache vips
 
 ENV NODE_ENV=production
 COPY --from=build /app ./
+# public/uploads está en .dockerignore (no versionar datos en la imagen),
+# así que hay que crearlo explícitamente: Strapi falla al arrancar si no
+# existe, y si el volumen de producción se monta en /app/public entero,
+# Docker solo inicializa el volumen con lo que ya exista aquí.
+RUN mkdir -p public/uploads
 
 EXPOSE 1337
 CMD ["npm", "run", "start"]
