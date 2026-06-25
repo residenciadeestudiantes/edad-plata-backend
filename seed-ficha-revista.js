@@ -36,6 +36,16 @@ function slugify(text) {
     .replace(/(^-|-$)/g, '');
 }
 
+function textToBlocks(value) {
+  if (!value) return undefined;
+  const paragraphs = String(value)
+    .split(/\r?\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return undefined;
+  return paragraphs.map((text) => ({ type: 'paragraph', children: [{ type: 'text', text }] }));
+}
+
 function normalizeTitulo(str) {
   return stripAccents(str)
     .toLowerCase()
@@ -141,6 +151,7 @@ async function main() {
       fecha_primer_numero: row['Fecha primer número'] ? `${row['Fecha primer número']}-01-01` : undefined,
       fecha_ultimo_numero: row['Fecha último número'] ? `${row['Fecha último número']}-01-01` : undefined,
       notas: row['Notas'] ?? undefined,
+      descripcion: textToBlocks(row['Descripción']),
       materias: materiaNombres.length > 0 ? materias : undefined,
       idioma: row['Idioma'] ?? undefined,
     };
