@@ -35,7 +35,12 @@ services:
       DATABASE_SSL: "false"
       URL: https://${DOMAIN_API}
     volumes:
-      - backend_uploads:/app/public/uploads
+      # Montado en /app/public (no solo /app/public/uploads): `strapi
+      # import` mueve uploads -> uploads_backup con un rename() antes de
+      # restaurar, y rename() no puede cruzar puntos de montaje distintos
+      # (EXDEV). Con todo public/ en el mismo volumen, ese rename interno
+      # se queda dentro del mismo filesystem.
+      - backend_uploads:/app/public
     depends_on:
       postgres:
         condition: service_healthy
