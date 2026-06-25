@@ -46,7 +46,9 @@ async function main() {
   const workbook = XLSX.readFile(EXCEL_PATH);
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-  const validRows = rows.filter((row) => row.titulo && row.id_numero_legado);
+  const validRows = rows.filter(
+    (row) => row.titulo && (row.id_numero_legado ?? row.ejemplar_id)
+  );
 
   const appContext = await compileStrapi();
   const app = await createStrapi(appContext).load();
@@ -57,6 +59,7 @@ async function main() {
   for (const row of validRows) {
     const idRevistaLegado = row.revista_id ?? row.id_revista_legado;
     const urlFacsimil = row.url_facsimil ?? row.url_original;
+    const idNumeroLegado = row.id_numero_legado ?? row.ejemplar_id;
 
     const publication = await app.documents('api::publication.publication').findFirst({
       filters: { id_revista_legado: idRevistaLegado },
@@ -67,10 +70,10 @@ async function main() {
     }
 
     const existing = await app.documents('api::issue.issue').findFirst({
-      filters: { id_numero_legado: row.id_numero_legado },
+      filters: { id_numero_legado: idNumeroLegado },
     });
     if (existing) {
-      console.log(`Ya existe número con id_numero_legado=${row.id_numero_legado}, se omite: ${row.titulo}`);
+      console.log(`Ya existe número con id_numero_legado=${idNumeroLegado}, se omite: ${row.titulo}`);
       continue;
     }
 
@@ -84,7 +87,7 @@ async function main() {
           data: {},
           files: {
             filepath: tmpPath,
-            originalFilename: `${row.id_numero_legado}${ext}`,
+            originalFilename: `${idNumeroLegado}${ext}`,
             mimetype: MIME_BY_EXT[ext.toLowerCase()] || 'application/octet-stream',
             size: stats.size,
           },
@@ -102,14 +105,14 @@ async function main() {
         mes: row.mes,
         año: row.año,
         url_facsimil: urlFacsimil,
-        id_numero_legado: row.id_numero_legado,
+        id_numero_legado: idNumeroLegado,
         imagen_portada: imagenPortadaId,
         publication: publication.documentId,
       },
       status: 'published',
     });
 
-    results.push({ titulo: issue.titulo, documentId: issue.documentId, id_numero_legado: row.id_numero_legado });
+    results.push({ titulo: issue.titulo, documentId: issue.documentId, id_numero_legado: idNumeroLegado });
   }
 
   console.log(JSON.stringify(results, null, 2));
