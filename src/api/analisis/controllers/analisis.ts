@@ -272,6 +272,51 @@ const UMBRAL_POCOS_ARTICULOS_AUTOR = 3;
 
 const FRECUENCIA_MINIMA_FIABLE = 5;
 
+// Categorías curadas para el análisis de evolución tecnológica en la
+// publicidad (Tab 2 de Análisis de Publicidad). Las palabras clave van sin
+// tildes porque se comparan contra texto normalizado con stripDiacritics.
+const CATEGORIAS_TECNOLOGICAS: { categoria: string; palabrasClave: string[] }[] = [
+  {
+    categoria: 'Automóviles',
+    palabrasClave: [
+      'automovil', 'automoviles', 'auto', 'autos', 'coche', 'coches', 'motor',
+      'motores', 'neumatico', 'neumaticos', 'garaje', 'garage', 'chasis',
+      'carroceria', 'conduccion',
+    ],
+  },
+  {
+    categoria: 'Radio',
+    palabrasClave: [
+      'radio', 'radios', 'radiotelefonia', 'radiorreceptor', 'receptor',
+      'receptores', 'altavoz', 'altavoces', 'antena', 'antenas', 'valvula',
+      'valvulas', 'galena', 'radioyente', 'radioyentes',
+    ],
+  },
+  {
+    categoria: 'Cinematógrafo',
+    palabrasClave: [
+      'cine', 'cines', 'cinematografo', 'cinematografica', 'cinematografico',
+      'pelicula', 'peliculas', 'film', 'films', 'proyector', 'proyectores',
+      'fotografia', 'fotografica',
+    ],
+  },
+  {
+    categoria: 'Teléfono',
+    palabrasClave: [
+      'telefono', 'telefonos', 'telefonica', 'telefonico', 'telefonia',
+    ],
+  },
+  {
+    categoria: 'Electrodomésticos',
+    palabrasClave: [
+      'nevera', 'neveras', 'frigorifico', 'frigorificos', 'lavadora',
+      'lavadoras', 'aspirador', 'aspiradora', 'aspiradoras',
+      'electrodomestico', 'electrodomesticos', 'ventilador', 'ventiladores',
+      'plancha', 'planchas',
+    ],
+  },
+];
+
 interface InterpretacionEntropia {
   nivel: 'insuficiente' | 'convencional' | 'moderado' | 'variado' | 'innovador';
   texto: string;
@@ -1271,6 +1316,271 @@ export default {
     const data = resultados.slice(start, start + pageSize);
 
     return ctx.send({ data, meta: { total, page, pageSize, pageCount } });
+  },
+
+  // --- Análisis de Publicidad ---
+
+  // Tab 1: qué se anuncia más, en qué revistas y en qué períodos. TF-IDF
+  // (frecuencia) sobre el texto OCR de los anuncios, con la distribución
+  // completa por revista/año y la posibilidad de acotar las palabras a una
+  // revista y/o año concretos.
+  async publicidadFrecuencia(ctx: Context) {
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    const añoRaw = typeof ctx.query.año === 'string' ? ctx.query.año.trim() : '';
+    const año = añoRaw && /^\d+$/.test(añoRaw) ? Number(añoRaw) : null;
+
+    const knex = strapi.db.connection;
+
+    const filas: { texto: string | null; revista_slug: string; revista_titulo: string; anio: number | null }[] =
+      await knex('articles as a')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+        .where('a.es_anuncio', true)
+        .andWhere('a.idioma', 'Español')
+        .andWhere('a.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .andWhere('p.published_at', 'is not', null)
+        .select(
+          'a.texto_ocr_anuncios as texto',
+          'p.slug as revista_slug',
+          'p.titulo as revista_titulo',
+          'i.ano as anio'
+        );
+
+    const porRevistaMap = new Map<string, { revista: string; slug: string; num_anuncios: number }>();
+    const porAñoMap = new Map<number, number>();
+    for (const fila of filas) {
+      const entry = porRevistaMap.get(fila.revista_slug) ?? {
+        revista: fila.revista_titulo,
+        slug: fila.revista_slug,
+        num_anuncios: 0,
+      };
+      entry.num_anuncios += 1;
+      porRevistaMap.set(fila.revista_slug, entry);
+
+      if (fila.anio !== null) {
+        porAñoMap.set(fila.anio, (porAñoMap.get(fila.anio) ?? 0) + 1);
+      }
+    }
+
+    const filasFiltradas = filas.filter(
+      (fila) =>
+        (!revistaSlug || fila.revista_slug === revistaSlug) && (año === null || fila.anio === año)
+    );
+
+    const palabras = contarFrecuencias(tokenize(filasFiltradas.map((f) => f.texto ?? '').join(' ')));
+
+    return ctx.send({
+      total_anuncios: filas.length,
+      total_anuncios_filtrados: filasFiltradas.length,
+      palabras,
+      por_revista: [...porRevistaMap.values()].sort((a, b) => b.num_anuncios - a.num_anuncios),
+      por_año: [...porAñoMap.entries()]
+        .map(([año, num_anuncios]) => ({ año, num_anuncios }))
+        .sort((a, b) => a.año - b.año),
+    });
+  },
+
+  // Tab 2: penetración de tecnologías concretas (automóviles, radio,
+  // cinematógrafo, teléfono, electrodomésticos) en la publicidad a lo largo
+  // del tiempo. Cuenta anuncios distintos que mencionan cada categoría por
+  // año (no ocurrencias sueltas, para no sobreponderar un anuncio repetitivo).
+  async publicidadTecnologia(ctx: Context) {
+    const knex = strapi.db.connection;
+
+    const filas: { texto: string | null; anio: number | null }[] = await knex('articles as a')
+      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+      .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+      .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+      .where('a.es_anuncio', true)
+      .andWhere('a.idioma', 'Español')
+      .andWhere('a.published_at', 'is not', null)
+      .andWhere('i.published_at', 'is not', null)
+      .andWhere('p.published_at', 'is not', null)
+      .select('a.texto_ocr_anuncios as texto', 'i.ano as anio');
+
+    const categorias = CATEGORIAS_TECNOLOGICAS.map(({ categoria, palabrasClave }) => {
+      const menciones = new Map<number, number>();
+
+      for (const fila of filas) {
+        if (fila.anio === null || !fila.texto) continue;
+        const tokens = new Set(stripDiacritics(fila.texto).toLowerCase().match(/[a-z]+/g) ?? []);
+        const mencionado = palabrasClave.some((palabra) => tokens.has(palabra));
+        if (mencionado) {
+          menciones.set(fila.anio, (menciones.get(fila.anio) ?? 0) + 1);
+        }
+      }
+
+      return {
+        categoria,
+        palabras_clave: palabrasClave,
+        serie: [...menciones.entries()]
+          .map(([año, num_anuncios]) => ({ año, num_anuncios }))
+          .sort((a, b) => a.año - b.año),
+      };
+    });
+
+    return ctx.send({ total_anuncios: filas.length, categorias });
+  },
+
+  // Tab 3: lenguaje publicitario (sucesores/predecesores y entropía), igual
+  // que cadenasLexicas pero sobre el corpus de anuncios en vez del literario,
+  // sin desglose por autor (la inmensa mayoría de los anuncios no tienen).
+  async publicidadCadenasLexicas(ctx: Context) {
+    const palabraRaw = ctx.query.palabra;
+    if (!palabraRaw || typeof palabraRaw !== 'string' || palabraRaw.trim().length === 0) {
+      return ctx.badRequest('El parámetro "palabra" es obligatorio.');
+    }
+    const palabra = palabraRaw.trim().toLowerCase();
+    const reconstruir = ctx.query.reconstruir === 'true';
+
+    if (reconstruir || !obtenerIndice('publicidad')) {
+      await construirIndice(strapi, 'publicidad');
+    }
+    const indice = obtenerIndice('publicidad')!;
+
+    const sucesores = calcularProbabilidades(indice.indiceCorpus, indice.frecuenciasCorpus, palabra, 10);
+    const predecesores = calcularProbabilidades(indice.indicePredecesores, indice.frecuenciasCorpus, palabra, 10);
+    const sucesoresCompletos = calcularProbabilidades(
+      indice.indiceCorpus,
+      indice.frecuenciasCorpus,
+      palabra,
+      Number.MAX_SAFE_INTEGER
+    );
+    const frecuenciaTotal = indice.frecuenciasCorpus.get(palabra) ?? 0;
+    const entropia = calcularEntropiaShannon(sucesoresCompletos);
+    const fiable = frecuenciaTotal >= FRECUENCIA_MINIMA_FIABLE;
+    const numSucesoresDistintos = indice.indiceCorpus.get(palabra)?.size ?? 0;
+    const entropiaMaxima = numSucesoresDistintos > 0 ? Math.log2(numSucesoresDistintos) : 0;
+    const entropiaNormalizada = entropiaMaxima > 0 ? entropia / entropiaMaxima : 0;
+
+    return ctx.send({
+      palabra,
+      corpus: {
+        sucesores,
+        predecesores,
+        entropia,
+        frecuenciaTotal,
+        fiable,
+        frecuenciaMinima: FRECUENCIA_MINIMA_FIABLE,
+        entropiaNormalizada,
+        entropiaMaxima,
+        interpretacion: interpretarEntropia(entropiaNormalizada, fiable),
+      },
+      metadatos: {
+        fechaConstruccionIndice: obtenerFechaConstruccion('publicidad')?.toISOString() ?? null,
+        totalArticulos: indice.totalArticulos,
+        totalTokens: indice.totalTokens,
+      },
+    });
+  },
+
+  // Tab 4: ¿adoptó la publicidad el léxico de las vanguardias literarias de
+  // las mismas revistas? Compara, con el mismo TF-IDF + distancia de coseno
+  // que estilometria, el corpus de anuncios contra el corpus literario
+  // (artículos que no son anuncios), acotable a una revista y, dentro de
+  // ella, a un número concreto.
+  async publicidadVanguardia(ctx: Context) {
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    const numeroOrdenRaw = typeof ctx.query.numero_orden === 'string' ? ctx.query.numero_orden.trim() : '';
+    const numeroOrden = numeroOrdenRaw && /^\d+$/.test(numeroOrdenRaw) ? Number(numeroOrdenRaw) : null;
+
+    if (numeroOrden !== null && !revistaSlug) {
+      return ctx.badRequest('Para acotar a un número concreto, indica también la revista.');
+    }
+
+    const knex = strapi.db.connection;
+
+    if (revistaSlug) {
+      const publicacion = await knex('publications')
+        .where('slug', revistaSlug)
+        .andWhere('published_at', 'is not', null)
+        .first();
+      if (!publicacion) {
+        return ctx.notFound(`No se ha encontrado la revista "${revistaSlug}".`);
+      }
+    }
+
+    async function cargarCorpus(esAnuncio: boolean) {
+      let query = knex('articles as a')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+        .andWhere('a.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .andWhere('p.published_at', 'is not', null)
+        .andWhere('a.idioma', 'Español');
+
+      query = esAnuncio
+        ? query.andWhere('a.es_anuncio', true)
+        : query.andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
+
+      if (revistaSlug) query = query.andWhere('p.slug', revistaSlug);
+      if (numeroOrden !== null) query = query.andWhere('i.numero_orden', numeroOrden);
+
+      const columnaTexto = esAnuncio ? 'a.texto_ocr_anuncios' : 'a.texto';
+      return query.select(`${columnaTexto} as texto`) as Promise<{ texto: string | null }[]>;
+    }
+
+    const [filasAnuncios, filasLiteratura] = await Promise.all([
+      cargarCorpus(true),
+      cargarCorpus(false),
+    ]);
+
+    const textoAnuncios = filasAnuncios.map((f) => f.texto ?? '').join(' ');
+    const textoLiteratura = filasLiteratura.map((f) => htmlToPlainText(f.texto)).join(' ');
+
+    const tokensAnuncios = tokenize(textoAnuncios);
+    const tokensLiteratura = tokenize(textoLiteratura);
+
+    if (tokensAnuncios.length === 0) {
+      return ctx.badRequest('No hay suficiente texto de anuncios para este ámbito.');
+    }
+    if (tokensLiteratura.length === 0) {
+      return ctx.badRequest('No hay suficiente texto literario para este ámbito.');
+    }
+
+    const vocabulario = [...new Set([...tokensAnuncios, ...tokensLiteratura])];
+    const [vectorAnuncios, vectorLiteratura] = buildTfIdf([tokensAnuncios, tokensLiteratura], vocabulario);
+
+    const similitudCoseno = cosineSimilarity(vectorAnuncios, vectorLiteratura, vocabulario);
+    const distanciaCoseno = 1 - similitudCoseno;
+
+    const diferencias = vocabulario.map((palabra) => {
+      const pesoAnuncios = vectorAnuncios.get(palabra) ?? 0;
+      const pesoLiteratura = vectorLiteratura.get(palabra) ?? 0;
+      return { palabra, diferencia: pesoAnuncios - pesoLiteratura, pesoAnuncios, pesoLiteratura };
+    });
+
+    const palabrasAnuncios = [...diferencias]
+      .sort((a, b) => b.diferencia - a.diferencia)
+      .slice(0, 10)
+      .map((entry) => ({ palabra: entry.palabra, peso: entry.pesoAnuncios }));
+
+    const palabrasLiteratura = [...diferencias]
+      .sort((a, b) => a.diferencia - b.diferencia)
+      .slice(0, 10)
+      .map((entry) => ({ palabra: entry.palabra, peso: entry.pesoLiteratura }));
+
+    return ctx.send({
+      anuncios: { num_articulos: filasAnuncios.length },
+      literatura: { num_articulos: filasLiteratura.length },
+      distancia_coseno: distanciaCoseno,
+      similitud_coseno: similitudCoseno,
+      palabras_caracteristicas: {
+        anuncios: palabrasAnuncios,
+        literatura: palabrasLiteratura,
+      },
+      nube_palabras: {
+        anuncios: contarFrecuencias(tokensAnuncios),
+        literatura: contarFrecuencias(tokensLiteratura),
+      },
+      interpretacion: interpretarDistancia(distanciaCoseno),
+    });
   },
 };
 

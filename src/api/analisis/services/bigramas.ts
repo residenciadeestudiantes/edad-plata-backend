@@ -23,15 +23,21 @@ export interface IndiceLexico {
   totalTokens: number;
 }
 
-let indiceCache: IndiceLexico | null = null;
-let fechaConstruccion: Date | null = null;
+// Dos corpus indexables con la misma estructura e independientes entre sí:
+// "literario" (artículos que no son anuncios, texto en `texto`) y
+// "publicidad" (anuncios, texto en `texto_ocr_anuncios`). Cada uno tiene su
+// propia caché para no mezclar ni reconstruir el uno al pedir el otro.
+export type TipoCorpus = 'literario' | 'publicidad';
 
-export function obtenerIndice(): IndiceLexico | null {
-  return indiceCache;
+const indiceCachePorCorpus = new Map<TipoCorpus, IndiceLexico>();
+const fechaConstruccionPorCorpus = new Map<TipoCorpus, Date>();
+
+export function obtenerIndice(corpus: TipoCorpus = 'literario'): IndiceLexico | null {
+  return indiceCachePorCorpus.get(corpus) ?? null;
 }
 
-export function obtenerFechaConstruccion(): Date | null {
-  return fechaConstruccion;
+export function obtenerFechaConstruccion(corpus: TipoCorpus = 'literario'): Date | null {
+  return fechaConstruccionPorCorpus.get(corpus) ?? null;
 }
 
 // Limpieza de HTML equivalente a la del resto de endpoints de análisis, más
@@ -99,10 +105,14 @@ const TAMAÑO_PAGINA = 100;
 
 // Recibe la instancia global de Strapi por parámetro (en vez de usar el
 // global directamente) para que este módulo sea testeable de forma aislada.
-export async function construirIndice(strapiInstance: {
-  db: { connection: import('knex').Knex };
-}): Promise<IndiceLexico> {
+export async function construirIndice(
+  strapiInstance: {
+    db: { connection: import('knex').Knex };
+  },
+  corpus: TipoCorpus = 'literario'
+): Promise<IndiceLexico> {
   const knex = strapiInstance.db.connection;
+  const columnaTexto = corpus === 'publicidad' ? 'a.texto_ocr_anuncios' : 'a.texto';
 
   const indiceCorpus = new Map<string, Map<string, number>>();
   const indicePredecesores = new Map<string, Map<string, number>>();
@@ -122,7 +132,11 @@ export async function construirIndice(strapiInstance: {
     const idsPagina: { id: number }[] = await knex('articles as a')
       .where('a.published_at', 'is not', null)
       .andWhere('a.idioma', 'Español')
-      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
+      .andWhere((qb) =>
+        corpus === 'publicidad'
+          ? qb.where('a.es_anuncio', true)
+          : qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio')
+      )
       .orderBy('a.id')
       .offset(offset)
       .limit(TAMAÑO_PAGINA)
@@ -139,7 +153,7 @@ export async function construirIndice(strapiInstance: {
           join.on('au.id', '=', 'aal.author_id').andOnNotNull('au.published_at');
         })
         .whereIn('a.id', ids)
-        .select('a.id as article_id', 'a.texto as texto', 'au.slug as autor_slug');
+        .select('a.id as article_id', `${columnaTexto} as texto`, 'au.slug as autor_slug');
 
     const articulosPorId = new Map<number, { texto: string | null; autores: Set<string> }>();
     for (const fila of filas) {
@@ -188,7 +202,7 @@ export async function construirIndice(strapiInstance: {
     if (idsPagina.length < TAMAÑO_PAGINA) break;
   }
 
-  indiceCache = {
+  const indice: IndiceLexico = {
     indiceCorpus,
     indicePredecesores,
     indiceAutores,
@@ -198,9 +212,10 @@ export async function construirIndice(strapiInstance: {
     totalArticulos,
     totalTokens,
   };
-  fechaConstruccion = new Date();
+  indiceCachePorCorpus.set(corpus, indice);
+  fechaConstruccionPorCorpus.set(corpus, new Date());
 
-  return indiceCache;
+  return indice;
 }
 
 // Devuelve hasta `limite` tokens más probables a partir de `palabra`, según
