@@ -1,0 +1,78 @@
+name: edad-plata
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME}
+      POSTGRES_USER: ${DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USERNAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+    restart: unless-stopped
+    env_file:
+      # Los secretos de Strapi (APP_KEYS, *_SECRET, *_SALT, ENCRYPTION_KEY)
+      # viven en backend/.env, no en deploy/.env (ese solo tiene las
+      # variables que docker-compose sustituye en este archivo).
+      - ../.env
+    environment:
+      DATABASE_CLIENT: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: ${DATABASE_NAME}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_SSL: "false"
+      URL: https://${DOMAIN_API}
+    volumes:
+      - backend_uploads:/app/public/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      # Asume que edad-plata-frontend está clonado como carpeta hermana de
+      # edad-plata-backend (ver deploy/README.md). NEXT_PUBLIC_STRAPI_URL se
+      # incrusta en el bundle al construir la imagen: si cambia el dominio,
+      # hay que reconstruir esta imagen, no basta con cambiar el .env.
+      context: ../../frontend
+      args:
+        NEXT_PUBLIC_STRAPI_URL: https://${DOMAIN_API}
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN_APP: ${DOMAIN_APP}
+      DOMAIN_API: ${DOMAIN_API}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  postgres_data:
+  backend_uploads:
+  caddy_data:
+  caddy_config:
