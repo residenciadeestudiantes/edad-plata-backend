@@ -9,30 +9,59 @@ if (!excelFile) {
 }
 const EXCEL_PATH = path.join(__dirname, 'excels', excelFile);
 
+function stripAccents(str) {
+  return str.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+// El excel codifica el/los autor(es) como un número simple o varios
+// separados por ";" o "|" según el origen del excel; extraer todos los
+// números funciona para ambos casos sin depender del separador exacto.
 function parseAutorIds(value) {
   if (!value) return [];
-  return String(value)
-    .split(';')
-    .map((id) => id.trim())
-    .filter(Boolean)
-    .map(Number);
+  return String(value).match(/\d+/g)?.map(Number) ?? [];
 }
 
 function parseNombres(value) {
   if (!value) return [];
   return String(value)
-    .split(';')
+    .split(/[;|]/)
     .map((nombre) => nombre.trim())
     .filter(Boolean);
 }
 
 function slugify(text) {
-  return text
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+  return stripAccents(text)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '');
+}
+
+function normalizeTitulo(str) {
+  return stripAccents(str)
+    .toLowerCase()
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function findPublicationByTitulo(app, titulo) {
+  const exact = await app.documents('api::publication.publication').findFirst({
+    filters: { titulo: { $eqi: titulo } },
+  });
+  if (exact) return exact;
+
+  // Sin match exacto (tilde distinta, o el excel añade una aclaración entre
+  // paréntesis que no está en el título real, p. ej. "Lola (suplemento de
+  // Carmen)" cuando en la base solo existe "Lola"): compara normalizando
+  // tildes y quitando paréntesis contra todas las publicaciones.
+  const normalizado = normalizeTitulo(titulo);
+  const todas = await app.documents('api::publication.publication').findMany({
+    status: 'published',
+    fields: ['titulo'],
+  });
+  const match = todas.find((p) => normalizeTitulo(p.titulo) === normalizado);
+  if (!match) return null;
+  return app.documents('api::publication.publication').findOne({ documentId: match.documentId });
 }
 
 async function findOrCreateMateria(app, nombre) {
@@ -77,9 +106,7 @@ async function main() {
 
   for (const row of dataRows) {
     const titulo = String(row['Título']).trim();
-    const publication = await app.documents('api::publication.publication').findFirst({
-      filters: { titulo: { $eqi: titulo } },
-    });
+    const publication = await findPublicationByTitulo(app, titulo);
 
     if (!publication) {
       throw new Error(`No se encontró publicación con título "${titulo}"`);
