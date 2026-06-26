@@ -4,7 +4,7 @@
 
 {$DOMAIN_APP} {
 	basic_auth {
-		admin $2a$14$J08MHFVY/UlcokswcFqbcu/dIebX2l1LF/Wq22bRZHjm6OO9pWdYW
+		admin $2a$14$vDCnnR1BaYWMgUNYl3O2cO3mJSY/Y7INCAbXRWibFs2Lk4nKbVeAW
 	}
 	reverse_proxy frontend:3000
 }
