@@ -44,6 +44,15 @@
     "longitud": {
       "type": "decimal"
     },
+    "lugar_publicacion_2": {
+      "type": "string"
+    },
+    "latitud_2": {
+      "type": "decimal"
+    },
+    "longitud_2": {
+      "type": "decimal"
+    },
     "notas": {
       "type": "text"
     },
