@@ -34,6 +34,11 @@
     "url_facsimil": {
       "type": "string"
     },
+    "paginas_facsimil": {
+      "type": "media",
+      "multiple": true,
+      "allowedTypes": ["images"]
+    },
     "id_numero_legado": {
       "type": "integer"
     },
