@@ -3,6 +3,9 @@
 }
 
 {$DOMAIN_APP} {
+	basic_auth {
+		admin $2a$14$J08MHFVY/UlcokswcFqbcu/dIebX2l1LF/Wq22bRZHjm6OO9pWdYW
+	}
 	reverse_proxy frontend:3000
 }
 
