@@ -414,7 +414,7 @@ export default {
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
-      .andWhere('a.idioma', 'Español')
+      .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
@@ -667,7 +667,7 @@ export default {
         .where('au.slug', slug)
         .andWhere('au.published_at', 'is not', null)
         .andWhere('a.published_at', 'is not', null)
-        .andWhere('a.idioma', 'Español')
+        .whereIn('a.idioma', ['es', 'Español'])
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
         .select('a.texto as texto');
 
@@ -787,7 +787,7 @@ export default {
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
-      .andWhere('a.idioma', 'Español')
+      .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
@@ -853,7 +853,7 @@ export default {
         .andWhere('a.published_at', 'is not', null)
         .andWhere('i.published_at', 'is not', null)
         .andWhere('p.published_at', 'is not', null)
-        .andWhere('a.idioma', 'Español')
+        .whereIn('a.idioma', ['es', 'Español'])
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
         .select('a.texto as texto');
 
@@ -916,7 +916,7 @@ export default {
       .innerJoin('articles as a', 'a.id', 'aal.article_id')
       .where('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
-      .andWhere('a.idioma', 'Español')
+      .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto');
 
@@ -954,7 +954,7 @@ export default {
       .andWhere('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
-      .andWhere('a.idioma', 'Español')
+      .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
 
@@ -1212,7 +1212,7 @@ export default {
       .where('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .andWhere('p.published_at', 'is not', null)
-      .andWhere('a.idioma', 'Español')
+      .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
     if (revistaSlug) {
@@ -1362,7 +1362,7 @@ export default {
         .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
         .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
         .where('a.es_anuncio', true)
-        .andWhere('a.idioma', 'Español')
+        .whereIn('a.idioma', ['es', 'Español'])
         .andWhere('a.published_at', 'is not', null)
         .andWhere('i.published_at', 'is not', null)
         .andWhere('p.published_at', 'is not', null)
@@ -1560,7 +1560,7 @@ export default {
         .andWhere('a.published_at', 'is not', null)
         .andWhere('i.published_at', 'is not', null)
         .andWhere('p.published_at', 'is not', null)
-        .andWhere('a.idioma', 'Español');
+        .whereIn('a.idioma', ['es', 'Español']);
 
       query = esAnuncio
         ? query.andWhere('a.es_anuncio', true)
