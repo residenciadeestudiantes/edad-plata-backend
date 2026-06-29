@@ -24,6 +24,9 @@
     "texto": {
       "type": "text"
     },
+    "texto_plano": {
+      "type": "text"
+    },
     "idioma": {
       "type": "string"
     },
