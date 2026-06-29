@@ -449,6 +449,14 @@ function getEmbedding(text: string, apiKey: string): Promise<number[]> {
 
 function fragmentoDesdeTextoPlano(texto: string | null): string {
   if (!texto) return '';
-  const limpio = texto.replace(/\s+/g, ' ').trim();
+  const limpio = texto
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/\s+/g, ' ')
+    .trim();
   return limpio.length > 300 ? limpio.slice(0, 300) + '…' : limpio;
 }
