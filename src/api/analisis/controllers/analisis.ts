@@ -275,47 +275,71 @@ const FRECUENCIA_MINIMA_FIABLE = 5;
 // Categorías curadas para el análisis de evolución tecnológica en la
 // publicidad (Tab 2 de Análisis de Publicidad). Las palabras clave van sin
 // tildes porque se comparan contra texto normalizado con stripDiacritics.
-const CATEGORIAS_TECNOLOGICAS: { categoria: string; palabrasClave: string[] }[] = [
+// Categorías tecnológicas con frase conceptual para búsqueda semántica.
+// El embedding de cada frase se genera una vez y se cachea en memoria.
+const CATEGORIAS_SEMANTICAS: { categoria: string; concepto: string }[] = [
   {
     categoria: 'Automóviles',
-    palabrasClave: [
-      'automovil', 'automoviles', 'auto', 'autos', 'coche', 'coches', 'motor',
-      'motores', 'neumatico', 'neumaticos', 'garaje', 'garage', 'chasis',
-      'carroceria', 'conduccion',
-    ],
+    concepto: 'automóvil coche vehículo de motor gasolina neumático carrocería conducción automovilismo garage',
   },
   {
     categoria: 'Radio',
-    palabrasClave: [
-      'radio', 'radios', 'radiotelefonia', 'radiorreceptor', 'receptor',
-      'receptores', 'altavoz', 'altavoces', 'antena', 'antenas', 'valvula',
-      'valvulas', 'galena', 'radioyente', 'radioyentes',
-    ],
+    concepto: 'radio receptor radiofónico emisión radiofónica altavoz galena ondas radiofonía radiorreceptor',
   },
   {
     categoria: 'Cinematógrafo',
-    palabrasClave: [
-      'cine', 'cines', 'cinematografo', 'cinematografica', 'cinematografico',
-      'pelicula', 'peliculas', 'film', 'films', 'proyector', 'proyectores',
-      'fotografia', 'fotografica',
-    ],
+    concepto: 'cine cinematógrafo película proyección fotográfica cinematografía film cámara fotográfica',
   },
   {
     categoria: 'Teléfono',
-    palabrasClave: [
-      'telefono', 'telefonos', 'telefonica', 'telefonico', 'telefonia',
-    ],
+    concepto: 'teléfono telefonía comunicación telefónica centralita aparato telefónico',
   },
   {
     categoria: 'Electrodomésticos',
-    palabrasClave: [
-      'nevera', 'neveras', 'frigorifico', 'frigorificos', 'lavadora',
-      'lavadoras', 'aspirador', 'aspiradora', 'aspiradoras',
-      'electrodomestico', 'electrodomesticos', 'ventilador', 'ventiladores',
-      'plancha', 'planchas',
-    ],
+    concepto: 'electrodoméstico nevera frigorífico lavadora aspiradora plancha aparato eléctrico del hogar ventilador',
   },
 ];
+
+// Cache de embeddings de categorías (se generan en la primera llamada)
+const _cacheCatEmbeddings = new Map<string, number[]>();
+
+function cosineSimilitud(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot   += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+async function getEmbeddingTecnologia(text: string, apiKey: string): Promise<number[]> {
+  const https = await import('https');
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ model: 'text-embedding-3-small', input: text.slice(0, 8000) });
+    const req = https.default.request({
+      hostname: 'api.openai.com',
+      path: '/v1/embeddings',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const json = JSON.parse(Buffer.concat(chunks).toString());
+        if (json.error) return reject(new Error(json.error.message));
+        resolve(json.data[0].embedding as number[]);
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 interface InterpretacionEntropia {
   nivel: 'insuficiente' | 'convencional' | 'moderado' | 'variado' | 'innovador';
@@ -1383,47 +1407,70 @@ export default {
     });
   },
 
-  // Tab 2: penetración de tecnologías concretas (automóviles, radio,
-  // cinematógrafo, teléfono, electrodomésticos) en la publicidad a lo largo
-  // del tiempo. Cuenta anuncios distintos que mencionan cada categoría por
-  // año (no ocurrencias sueltas, para no sobreponderar un anuncio repetitivo).
+  // Tab 2: penetración de tecnologías concretas en la publicidad a lo largo
+  // del tiempo, usando similitud semántica (coseno sobre embeddings pgvector)
+  // en lugar de coincidencia exacta de palabras clave.
+  // El embedding de cada categoría se genera una vez y se cachea en memoria.
   async publicidadTecnologia(ctx: Context) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return ctx.internalServerError('OPENAI_API_KEY no configurada.');
+
+    const UMBRAL = 0.28; // similitud coseno mínima para asignar un anuncio a una categoría
     const knex = strapi.db.connection;
 
-    const filas: { texto: string | null; anio: number | null }[] = await knex('articles as a')
-      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
-      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
-      .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
-      .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
-      .where('a.es_anuncio', true)
-      .andWhere('a.idioma', 'Español')
-      .andWhere('a.published_at', 'is not', null)
-      .andWhere('i.published_at', 'is not', null)
-      .andWhere('p.published_at', 'is not', null)
-      .select('a.texto_ocr_anuncios as texto', 'i.ano as anio');
+    // Cargar embeddings de anuncios desde la BD
+    const { rows: anunciosRaw } = await knex.raw(`
+      SELECT a.id, a.embedding::text AS embedding_str, i.ano AS anio
+      FROM articles a
+      INNER JOIN articles_issue_lnk ail ON ail.article_id = a.id
+      INNER JOIN issues i ON i.id = ail.issue_id
+      INNER JOIN issues_publication_lnk ipl ON ipl.issue_id = i.id
+      INNER JOIN publications p ON p.id = ipl.publication_id
+      WHERE a.es_anuncio = true
+        AND a.embedding IS NOT NULL
+        AND a.published_at IS NOT NULL
+        AND i.published_at IS NOT NULL
+        AND p.published_at IS NOT NULL
+    `);
 
-    const categorias = CATEGORIAS_TECNOLOGICAS.map(({ categoria, palabrasClave }) => {
-      const menciones = new Map<number, number>();
+    type AnuncioRow = { id: number; embedding_str: string; anio: number | null };
+    const anuncios: { id: number; vec: number[]; anio: number }[] = (anunciosRaw as AnuncioRow[])
+      .filter((r) => r.anio !== null)
+      .map((r) => ({
+        id: r.id,
+        anio: Number(r.anio),
+        vec: JSON.parse(r.embedding_str) as number[],
+      }));
 
-      for (const fila of filas) {
-        if (fila.anio === null || !fila.texto) continue;
-        const tokens = new Set(stripDiacritics(fila.texto).toLowerCase().match(/[a-z]+/g) ?? []);
-        const mencionado = palabrasClave.some((palabra) => tokens.has(palabra));
-        if (mencionado) {
-          menciones.set(fila.anio, (menciones.get(fila.anio) ?? 0) + 1);
+    // Generar (o recuperar de caché) el embedding de cada categoría
+    const categoriasConSerie = await Promise.all(
+      CATEGORIAS_SEMANTICAS.map(async ({ categoria, concepto }) => {
+        let catVec = _cacheCatEmbeddings.get(categoria);
+        if (!catVec) {
+          catVec = await getEmbeddingTecnologia(concepto, apiKey);
+          _cacheCatEmbeddings.set(categoria, catVec);
         }
-      }
 
-      return {
-        categoria,
-        palabras_clave: palabrasClave,
-        serie: [...menciones.entries()]
-          .map(([año, num_anuncios]) => ({ año, num_anuncios }))
-          .sort((a, b) => a.año - b.año),
-      };
-    });
+        const menciones = new Map<number, number>();
+        for (const anuncio of anuncios) {
+          const sim = cosineSimilitud(anuncio.vec, catVec);
+          if (sim >= UMBRAL) {
+            menciones.set(anuncio.anio, (menciones.get(anuncio.anio) ?? 0) + 1);
+          }
+        }
 
-    return ctx.send({ total_anuncios: filas.length, categorias });
+        return {
+          categoria,
+          palabras_clave: [concepto],
+          similitud_umbral: UMBRAL,
+          serie: [...menciones.entries()]
+            .map(([año, num_anuncios]) => ({ año, num_anuncios }))
+            .sort((a, b) => a.año - b.año),
+        };
+      })
+    );
+
+    return ctx.send({ total_anuncios: anuncios.length, categorias: categoriasConSerie });
   },
 
   // Tab 3: lenguaje publicitario (sucesores/predecesores y entropía), igual
