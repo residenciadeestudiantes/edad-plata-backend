@@ -9,6 +9,7 @@
 // evaluados de izquierda a derecha sin precedencia.
 
 import type { Context } from 'koa';
+import * as https from 'https';
 
 interface ArticleRow {
   article_id: number;
@@ -281,4 +282,172 @@ export default {
 
     return ctx.send({ data, meta: { total, page, pageSize, pageCount } });
   },
+
+  async semantico(ctx: Context) {
+    const q = typeof ctx.query.q === 'string' ? ctx.query.q.trim() : '';
+    if (q.length < 3) {
+      return ctx.badRequest('El parámetro "q" debe tener al menos 3 caracteres.');
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return ctx.internalServerError('OPENAI_API_KEY no configurada.');
+    }
+
+    const page     = Math.max(1, Number(ctx.query.page)     || 1);
+    const pageSize = Math.max(1, Math.min(50, Number(ctx.query.pageSize) || 20));
+    const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
+    const autorSlug   = typeof ctx.query.autor   === 'string' ? ctx.query.autor.trim()   : '';
+    const desdeRaw    = typeof ctx.query.desde   === 'string' ? ctx.query.desde.trim()   : '';
+    const hastaRaw    = typeof ctx.query.hasta   === 'string' ? ctx.query.hasta.trim()   : '';
+    const desde = desdeRaw && /^\d+$/.test(desdeRaw) ? Number(desdeRaw) : null;
+    const hasta = hastaRaw && /^\d+$/.test(hastaRaw) ? Number(hastaRaw) : null;
+
+    // 1. Obtener embedding de la consulta
+    let queryVector: number[];
+    try {
+      queryVector = await getEmbedding(q, apiKey);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return ctx.internalServerError(`Error al generar embedding: ${msg}`);
+    }
+
+    // 2. Búsqueda por similitud coseno en PostgreSQL
+    const knex = strapi.db.connection;
+
+    // Construimos la lista de IDs de artículos del autor si se filtra
+    let authorArticleIds: number[] | null = null;
+    if (autorSlug) {
+      authorArticleIds = await knex('articles_authors_lnk as aal')
+        .innerJoin('authors as au', 'au.id', 'aal.author_id')
+        .where('au.slug', autorSlug)
+        .andWhere('au.published_at', 'is not', null)
+        .pluck('aal.article_id');
+    }
+
+    // La búsqueda vectorial se hace con SQL raw para poder usar el operador <=>
+    const vectorLiteral = `[${queryVector.join(',')}]`;
+
+    let sql = `
+      SELECT
+        a.id          AS article_id,
+        a.titulo      AS articulo_titulo,
+        a.slug        AS articulo_slug,
+        a.texto_plano AS texto_plano,
+        i.numero_orden AS numero_orden,
+        i.ano          AS anio,
+        p.titulo       AS revista_titulo,
+        p.slug         AS revista_slug,
+        1 - (a.embedding <=> ?::vector) AS similitud
+      FROM articles a
+      INNER JOIN articles_issue_lnk   ail ON ail.article_id = a.id
+      INNER JOIN issues               i   ON i.id  = ail.issue_id
+      INNER JOIN issues_publication_lnk ipl ON ipl.issue_id = i.id
+      INNER JOIN publications         p   ON p.id  = ipl.publication_id
+      WHERE a.published_at IS NOT NULL
+        AND i.published_at IS NOT NULL
+        AND p.published_at IS NOT NULL
+        AND a.embedding IS NOT NULL
+        AND (a.es_anuncio = false OR a.es_anuncio IS NULL)
+    `;
+
+    const params: unknown[] = [vectorLiteral];
+
+    if (revistaSlug) { sql += ' AND p.slug = ?';  params.push(revistaSlug); }
+    if (desde !== null) { sql += ' AND i.ano >= ?'; params.push(desde); }
+    if (hasta !== null) { sql += ' AND i.ano <= ?'; params.push(hasta); }
+    if (authorArticleIds !== null) {
+      if (authorArticleIds.length === 0) {
+        return ctx.send({ data: [], meta: { total: 0, page, pageSize, pageCount: 0 } });
+      }
+      sql += ` AND a.id = ANY(?)`;
+      params.push(authorArticleIds);
+    }
+
+    // Pedimos más resultados de los necesarios para poder paginar en memoria
+    const FETCH_LIMIT = 200;
+    sql += ` ORDER BY a.embedding <=> ?::vector LIMIT ?`;
+    params.push(vectorLiteral, FETCH_LIMIT);
+
+    const { rows } = await knex.raw(sql, params);
+
+    // 3. Obtener autores de los artículos recuperados
+    const articleIds = rows.map((r) => r.article_id);
+    const authorRows: { article_id: number; nombre: string }[] = articleIds.length
+      ? await knex('articles_authors_lnk as aal')
+          .innerJoin('authors as au', 'au.id', 'aal.author_id')
+          .whereIn('aal.article_id', articleIds)
+          .andWhere('au.published_at', 'is not', null)
+          .select('aal.article_id as article_id', 'au.nombre as nombre')
+      : [];
+
+    const authorsByArticle = new Map<number, string[]>();
+    for (const row of authorRows) {
+      const list = authorsByArticle.get(row.article_id) ?? [];
+      list.push(row.nombre);
+      authorsByArticle.set(row.article_id, list);
+    }
+
+    // 4. Construir respuesta
+    const resultados = rows.map((row) => ({
+      id:           row.article_id,
+      titulo:       row.articulo_titulo,
+      slug:         row.articulo_slug,
+      autores:      authorsByArticle.get(row.article_id) ?? [],
+      revista:      row.revista_titulo,
+      revista_slug: row.revista_slug,
+      numero_orden: row.numero_orden ? Number(row.numero_orden) : null,
+      año:          row.anio ? Number(row.anio) : null,
+      fragmento:    fragmentoDesdeTextoPlano(row.texto_plano),
+      similitud:    Math.round(Number(row.similitud) * 1000) / 1000,
+    }));
+
+    const total     = resultados.length;
+    const pageCount = Math.ceil(total / pageSize);
+    const start     = (page - 1) * pageSize;
+    const data      = resultados.slice(start, start + pageSize);
+
+    return ctx.send({ data, meta: { total, page, pageSize, pageCount } });
+  },
 };
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function getEmbedding(text: string, apiKey: string): Promise<number[]> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model: 'text-embedding-3-small',
+      input: text.slice(0, 8000),
+    });
+    const req = https.request(
+      {
+        hostname: 'api.openai.com',
+        path: '/v1/embeddings',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const json = JSON.parse(Buffer.concat(chunks).toString());
+          if (json.error) return reject(new Error(json.error.message));
+          resolve(json.data[0].embedding as number[]);
+        });
+      }
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function fragmentoDesdeTextoPlano(texto: string | null): string {
+  if (!texto) return '';
+  const limpio = texto.replace(/\s+/g, ' ').trim();
+  return limpio.length > 300 ? limpio.slice(0, 300) + '…' : limpio;
+}
