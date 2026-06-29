@@ -388,8 +388,9 @@ export default {
       authorsByArticle.set(row.article_id, list);
     }
 
-    // 4. Construir respuesta
-    const resultados = rows.map((row) => ({
+    // 4. Construir respuesta (descartamos resultados por debajo del umbral mínimo)
+    const MIN_SIMILITUD = 0.35;
+    const resultados = rows.filter((row) => Number(row.similitud) >= MIN_SIMILITUD).map((row) => ({
       id:           row.article_id,
       titulo:       row.articulo_titulo,
       slug:         row.articulo_slug,
