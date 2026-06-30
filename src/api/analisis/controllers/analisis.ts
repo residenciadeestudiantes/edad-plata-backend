@@ -1114,38 +1114,38 @@ export default {
       return `**${a.nombre}** (${a.num_articulos} textos analizados)\nTendencia: ${tendencia(a.trayectoria)}\nTrayectoria:\n${puntos}`;
     }).join('\n\n');
 
-    const prompt = `Eres un especialista en literatura española de la Edad de Plata (1898-1939) con conocimiento profundo de sus movimientos, autores y estilos.
+    const prompt = `Eres un asistente de análisis de datos literarios. Se te proporcionan los resultados numéricos de un análisis de deriva estilística léxica y debes describirlos de forma objetiva y precisa.
 
-Se te facilita el análisis de deriva estilística de ${autores.length} autor${autores.length > 1 ? 'es' : ''}, calculado mediante vectores TF-IDF coseno y normalizado como z-score respecto al centroide léxico del corpus de revistas de la Edad de Plata.
+INSTRUCCIONES:
+- Describe únicamente lo que los datos muestran. No añadas información biográfica, contexto histórico ni referencias a obras o movimientos literarios que no estén directamente respaldados por los propios números.
+- No atribuyas causas externas a las variaciones observadas.
+- Usa formulaciones prudentes: "los datos muestran", "se observa", "podría sugerir". Nunca uses afirmaciones categóricas sobre la intención o la vida del autor.
+- Si los datos de un autor son escasos (pocos años o pocos textos), señálalo como limitación.
+- Si la trayectoria de un autor es plana o irregular, dilo claramente en lugar de forzar una narrativa.
+- No repitas la clave de lectura; el lector ya la conoce.
 
-**Clave de lectura:**
-- z = 0: el autor coincide exactamente con la media léxica del corpus
-- Zona de norma: [-1σ, +1σ] — aquí se sitúa el 68 % de los autores
-- Umbral de singularidad: > +2σ — el 2,5 % más distintivo
-- z negativo: léxico más convergente con la norma de lo habitual
-- z positivo alto: léxico muy alejado de la norma
+CLAVE DE LECTURA (solo para tu referencia interna, no la reproduzcas):
+- z = 0: léxico coincide con la media del corpus
+- Zona de norma [-1σ, +1σ]: 68 % de los autores
+- Por encima de +2σ: 2,5 % más distintivo léxicamente
+- Tendencia positiva: el léxico se aleja de la media con el tiempo
+- Tendencia negativa: el léxico se acerca a la media con el tiempo
 
-**Modo analizado:** ${modoLabel}
-**Estadísticos del corpus:** μ = ${norma.media.toFixed(3)}, σ = ${norma.std.toFixed(3)} (basados en ${norma.num_autores} autores, ${norma.num_articulos} textos)
+DATOS DEL ANÁLISIS:
+Modo: ${modoLabel}
+Estadísticos del corpus: μ = ${norma.media.toFixed(3)}, σ = ${norma.std.toFixed(3)} (${norma.num_autores} autores de referencia, ${norma.num_articulos} textos)
 
-**Autores:**
 ${autoresTexto}
 
-Escribe una interpretación literaria e histórica de estos resultados en español, con tono académico pero accesible para un investigador. Incluye:
-1. Una lectura de la trayectoria de cada autor (¿experimenta una evolución?, ¿es coherente con su posición en el campo literario?)
-2. Si hay varios autores, una comparativa de sus trayectorias (convergencias, divergencias, épocas de aproximación)
-3. Contextualización en los movimientos literarios del período (modernismo, noventayochismo, vanguardias, generación del 27, etc.) cuando sea pertinente
-4. Una valoración sintética final
-
-Responde en 4-6 párrafos concisos. No uses encabezados ni listas; texto corrido.`;
+Escribe la descripción en español, en 3-4 párrafos breves y en texto corrido (sin encabezados ni listas). Limítate a lo que los números indican.`;
 
     const https = await import('https');
     const interpretacion: string = await new Promise((resolve, reject) => {
       const reqBody = JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1200,
-        temperature: 0.6,
+        max_tokens: 900,
+        temperature: 0.2,
       });
       const req = https.default.request(
         {
