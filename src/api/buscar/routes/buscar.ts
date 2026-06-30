@@ -12,5 +12,11 @@ export default {
       handler: 'buscar.semantico',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/buscar/imagenes',
+      handler: 'buscar.imagenes',
+      config: { auth: false },
+    },
   ],
 };

@@ -27,6 +27,9 @@
     "texto_plano": {
       "type": "text"
     },
+    "pies_imagen": {
+      "type": "text"
+    },
     "idioma": {
       "type": "string"
     },

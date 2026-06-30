@@ -6,6 +6,7 @@
 interface ArticleData {
   texto?: string | null;
   texto_plano?: string | null;
+  pies_imagen?: string | null;
 }
 
 function limpiarTexto(texto: string): string {
@@ -34,10 +35,32 @@ function htmlAPlanoTexto(html: string): string {
     .trim();
 }
 
+// Extrae el texto de todos los pies de foto (TituloI y NormalI) del HTML
+// del artículo. Se almacena en texto plano para búsquedas por contenido.
+function extraerPiesImagen(html: string): string {
+  const re = /<div class="(?:TituloI|NormalI)">([\s\S]*?)<\/div>/g;
+  const partes: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const texto = m[1]
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (texto) partes.push(texto);
+  }
+  return partes.join('\n');
+}
+
 function procesarTexto(data: ArticleData) {
   if (data.texto) {
     data.texto = limpiarTexto(data.texto);
     data.texto_plano = htmlAPlanoTexto(data.texto);
+    data.pies_imagen = extraerPiesImagen(data.texto);
   }
 }
 
