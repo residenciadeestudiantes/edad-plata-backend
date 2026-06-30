@@ -893,6 +893,9 @@ export default {
       );
     }
 
+    const modo: 'prosa' | 'poesia' = ctx.query.modo === 'poesia' ? 'poesia' : 'prosa';
+    const etiqueta = modo === 'poesia' ? 'poema(s)' : 'artículo(s)';
+
     const knex = strapi.db.connection;
 
     const autoresInfo: { slug: string; nombre: string }[] = await knex('authors')
@@ -906,9 +909,17 @@ export default {
       return ctx.notFound(`No se ha encontrado el autor "${slugFaltante}".`);
     }
 
-    // Corpus de referencia: todos los autores publicados con al menos un
-    // artículo publicado, usados para calcular la norma estilística
-    // (centroide TF-IDF de todos los autores).
+    // Filtra por tipo de texto según el modo seleccionado
+    const filtroModo = (qb: ReturnType<typeof knex>) => {
+      if (modo === 'poesia') {
+        qb.where('a.es_poema', true);
+      } else {
+        qb.where((inner) => inner.where('a.es_poema', false).orWhereNull('a.es_poema'));
+      }
+    };
+
+    // Corpus de referencia: todos los autores publicados con artículos del
+    // tipo seleccionado, para calcular la norma (centroide TF-IDF).
     const filasReferencia: { autor_slug: string; texto: string | null }[] = await knex(
       'articles_authors_lnk as aal'
     )
@@ -918,6 +929,7 @@ export default {
       .andWhere('a.published_at', 'is not', null)
       .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
+      .andWhere(filtroModo)
       .select('au.slug as autor_slug', 'a.texto as texto');
 
     const textosPorAutor = new Map<string, string[]>();
@@ -940,9 +952,7 @@ export default {
       return ctx.badRequest('No hay suficientes datos en el corpus para calcular la innovación estilística.');
     }
 
-    // Artículos por autor y año de los autores solicitados, para construir
-    // su trayectoria en el MISMO espacio vectorial que la norma (se añaden
-    // como documentos extra a la misma llamada a buildTfIdf, más abajo).
+    // Artículos del mismo tipo por autor y año, para la trayectoria temporal.
     const filasPorAnio: { autor_slug: string; texto: string | null; anio: number | null }[] = await knex(
       'articles_authors_lnk as aal'
     )
@@ -956,6 +966,7 @@ export default {
       .andWhere('i.published_at', 'is not', null)
       .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
+      .andWhere(filtroModo)
       .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
 
     const aniosPorAutor = new Map<string, Map<number, string[]>>();
@@ -995,9 +1006,23 @@ export default {
       centroide.set(palabra, suma / vectoresAutoresReferencia.length);
     }
 
+    // Distribución real de distancias de los autores de referencia al centroide,
+    // para que el frontend pueda dibujar la zona de norma con datos estadísticos.
+    const distanciasReferencia = vectoresAutoresReferencia.map(
+      (v) => 1 - cosineSimilarity(v, centroide, vocabulario)
+    );
+    const mediaNorma =
+      distanciasReferencia.reduce((a, b) => a + b, 0) / distanciasReferencia.length;
+    const stdNorma = Math.sqrt(
+      distanciasReferencia.reduce((a, b) => a + (b - mediaNorma) ** 2, 0) /
+        distanciasReferencia.length
+    );
+
     const norma = {
       num_autores: slugsReferencia.length,
       num_articulos: filasReferencia.length,
+      media: mediaNorma,
+      std: stdNorma,
       aviso_pocos_datos:
         slugsReferencia.length < UMBRAL_POCOS_AUTORES_NORMA
           ? `La norma se ha calculado con solo ${slugsReferencia.length} autores; los resultados pueden ser poco representativos.`
@@ -1025,9 +1050,9 @@ export default {
         num_articulos: numArticulos,
         aviso_pocos_datos:
           numArticulos === 0
-            ? 'Este autor no tiene artículos en español.'
+            ? `Este autor no tiene ${etiqueta} en español.`
             : numArticulos < UMBRAL_POCOS_ARTICULOS_AUTOR
-              ? `Este autor tiene solo ${numArticulos} artículo(s) publicado(s); los resultados pueden ser poco fiables.`
+              ? `Este autor tiene solo ${numArticulos} ${etiqueta} publicado(s); los resultados pueden ser poco fiables.`
               : null,
         trayectoria,
       };
