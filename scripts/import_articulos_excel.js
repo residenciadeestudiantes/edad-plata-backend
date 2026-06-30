@@ -123,6 +123,24 @@ async function run() {
     else                  entry.publishedId = r.id;
   }
 
+  // Precargar mapa id_autor_legado → {draftId, publishedId}
+  const { rows: authorRows } = await db.query(`
+    SELECT id, id_autor_legado, published_at
+    FROM authors
+    WHERE id_autor_legado IS NOT NULL
+    ORDER BY id_autor_legado, id
+  `);
+
+  const authorMap = new Map(); // id_autor_legado → { draftId, publishedId }
+  for (const r of authorRows) {
+    const key = r.id_autor_legado;
+    if (!authorMap.has(key)) authorMap.set(key, {});
+    const entry = authorMap.get(key);
+    if (!r.published_at) entry.draftId     = r.id;
+    else                  entry.publishedId = r.id;
+  }
+  console.log(`Autores con id_autor_legado: ${authorMap.size}`);
+
   // Leer Excel
   const wb   = XLSX.readFile(xlsxPath);
   const ws   = wb.Sheets[wb.SheetNames[0]];
@@ -173,6 +191,18 @@ async function run() {
       ? str(row.imagenes).split('|').map(u => u.trim()).filter(Boolean)
       : [];
 
+    // Resolver autores
+    const autorLegadoStr = str(row.id_autor_legado);
+    const autorIds = [];
+    if (autorLegadoStr) {
+      const legadoIds = autorLegadoStr.split('|').map(s => num(s.trim())).filter(Boolean);
+      for (const legId of legadoIds) {
+        const a = authorMap.get(legId);
+        if (a) autorIds.push(a);
+        else console.warn(`    ⚠ Autor id_autor_legado=${legId} no encontrado`);
+      }
+    }
+
     let slug = slugify(titulo) || `articulo-${Date.now()}`;
     const { rows: slugExist } = await db.query(
       `SELECT id FROM articles WHERE slug = $1 LIMIT 1`, [slug]
@@ -199,6 +229,12 @@ async function run() {
         `INSERT INTO articles_issue_lnk (article_id, issue_id, article_ord) VALUES ($1,$2,$3)`,
         [draft.id, issue.draftId, posicion]
       );
+      for (let i = 0; i < autorIds.length; i++) {
+        await db.query(
+          `INSERT INTO articles_authors_lnk (article_id, author_id, author_ord) VALUES ($1,$2,$3)`,
+          [draft.id, autorIds[i].draftId, i + 1]
+        );
+      }
 
       // Published
       const { rows: [pub] } = await db.query(
@@ -209,6 +245,12 @@ async function run() {
         `INSERT INTO articles_issue_lnk (article_id, issue_id, article_ord) VALUES ($1,$2,$3)`,
         [pub.id, issue.publishedId, posicion]
       );
+      for (let i = 0; i < autorIds.length; i++) {
+        await db.query(
+          `INSERT INTO articles_authors_lnk (article_id, author_id, author_ord) VALUES ($1,$2,$3)`,
+          [pub.id, autorIds[i].publishedId, i + 1]
+        );
+      }
 
       // Imágenes
       for (let i = 0; i < imagenesUrls.length; i++) {
