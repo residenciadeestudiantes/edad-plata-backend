@@ -7,6 +7,7 @@ interface ArticleData {
   texto?: string | null;
   texto_plano?: string | null;
   pies_imagen?: string | null;
+  es_poema?: boolean | null;
 }
 
 function limpiarTexto(texto: string): string {
@@ -56,11 +57,16 @@ function extraerPiesImagen(html: string): string {
   return partes.join('\n');
 }
 
+function esPoema(html: string): boolean {
+  return /class="(?:Estrofa|TítuloP)"/.test(html);
+}
+
 function procesarTexto(data: ArticleData) {
   if (data.texto) {
     data.texto = limpiarTexto(data.texto);
     data.texto_plano = htmlAPlanoTexto(data.texto);
     data.pies_imagen = extraerPiesImagen(data.texto);
+    data.es_poema = esPoema(data.texto);
   }
 }
 

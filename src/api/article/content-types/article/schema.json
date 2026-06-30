@@ -37,6 +37,10 @@
       "type": "boolean",
       "default": false
     },
+    "es_poema": {
+      "type": "boolean",
+      "default": false
+    },
     "texto_ocr_anuncios": {
       "type": "text"
     },
