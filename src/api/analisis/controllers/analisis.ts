@@ -1114,30 +1114,34 @@ export default {
       return `**${a.nombre}** (${a.num_articulos} textos analizados)\nTendencia: ${tendencia(a.trayectoria)}\nTrayectoria:\n${puntos}`;
     }).join('\n\n');
 
-    const prompt = `Eres un asistente de análisis de datos literarios. Se te proporcionan los resultados numéricos de un análisis de deriva estilística léxica y debes describirlos de forma objetiva y precisa.
+    const prompt = `Eres un asistente que explica resultados de análisis de datos literarios a un público general, sin conocimientos técnicos previos.
 
-INSTRUCCIONES:
-- Describe únicamente lo que los datos muestran. No añadas información biográfica, contexto histórico ni referencias a obras o movimientos literarios que no estén directamente respaldados por los propios números.
-- No atribuyas causas externas a las variaciones observadas.
-- Usa formulaciones prudentes: "los datos muestran", "se observa", "podría sugerir". Nunca uses afirmaciones categóricas sobre la intención o la vida del autor.
-- Si los datos de un autor son escasos (pocos años o pocos textos), señálalo como limitación.
-- Si la trayectoria de un autor es plana o irregular, dilo claramente en lugar de forzar una narrativa.
-- No repitas la clave de lectura; el lector ya la conoce.
+Se te proporcionan los resultados de un análisis que mide cómo de diferente es el vocabulario de un autor respecto al vocabulario habitual del conjunto de autores de las revistas de la Edad de Plata española. Cuanto mayor es la puntuación, más singular o alejado del vocabulario común es ese autor en ese período. La puntuación 0 significa que el autor usa exactamente el vocabulario medio del corpus; puntuaciones entre -1 y +1 son "normales"; por encima de +2 el autor es léxicamente muy singular.
 
-CLAVE DE LECTURA (solo para tu referencia interna, no la reproduzcas):
-- z = 0: léxico coincide con la media del corpus
-- Zona de norma [-1σ, +1σ]: 68 % de los autores
-- Por encima de +2σ: 2,5 % más distintivo léxicamente
-- Tendencia positiva: el léxico se aleja de la media con el tiempo
-- Tendencia negativa: el léxico se acerca a la media con el tiempo
+INSTRUCCIONES ESTRICTAS:
+- Explica los resultados en lenguaje sencillo y comprensible para alguien sin formación especializada.
+- Describe únicamente lo que los datos muestran. No añadas información biográfica, referencias a obras concretas ni contexto histórico que no esté directamente respaldado por los números.
+- No atribuyas causas a las variaciones observadas; solo descríbelas.
+- Usa formulaciones prudentes: "los datos muestran", "se observa", "parece indicar". Evita afirmaciones categóricas.
+- Si los datos de un autor son escasos, señálalo como limitación.
+- Si la trayectoria es plana o irregular sin tendencia clara, dilo en lugar de forzar una narrativa.
+- No uses términos técnicos como "z-score", "TF-IDF", "centroide" ni "desviación típica"; tradúcelos a lenguaje llano.
+- No reproduzcas los números brutos; descríbelos en palabras ("su puntuación sube progresivamente", "se mantiene cerca de la media", "alcanza un nivel muy por encima de la norma").
 
-DATOS DEL ANÁLISIS:
+CLAVE DE LECTURA (solo para tu referencia interna):
+- z = 0: vocabulario coincide con la media del corpus
+- Entre -1 y +1: rango habitual (la mayoría de autores)
+- Por encima de +2: vocabulario muy singular
+- Tendencia creciente: el vocabulario se vuelve más singular con el tiempo
+- Tendencia decreciente: el vocabulario se acerca más al común con el tiempo
+
+DATOS:
 Modo: ${modoLabel}
-Estadísticos del corpus: μ = ${norma.media.toFixed(3)}, σ = ${norma.std.toFixed(3)} (${norma.num_autores} autores de referencia, ${norma.num_articulos} textos)
+Corpus de referencia: ${norma.num_autores} autores, ${norma.num_articulos} textos
 
 ${autoresTexto}
 
-Escribe la descripción en español, en 3-4 párrafos breves y en texto corrido (sin encabezados ni listas). Limítate a lo que los números indican.`;
+Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados ni listas). Sé claro, directo y accesible.`;
 
     const https = await import('https');
     const interpretacion: string = await new Promise((resolve, reject) => {
