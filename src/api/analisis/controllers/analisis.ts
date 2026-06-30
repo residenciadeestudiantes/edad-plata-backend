@@ -953,9 +953,13 @@ export default {
     }
 
     // Artículos del mismo tipo por autor y año, para la trayectoria temporal.
-    const filasPorAnio: { autor_slug: string; texto: string | null; anio: number | null }[] = await knex(
-      'articles_authors_lnk as aal'
-    )
+    const filasPorAnio: {
+      autor_slug: string;
+      texto: string | null;
+      anio: number | null;
+      article_slug: string;
+      article_titulo: string;
+    }[] = await knex('articles_authors_lnk as aal')
       .innerJoin('authors as au', 'au.id', 'aal.author_id')
       .innerJoin('articles as a', 'a.id', 'aal.article_id')
       .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
@@ -967,18 +971,32 @@ export default {
       .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
       .andWhere(filtroModo)
-      .select('au.slug as autor_slug', 'a.texto as texto', 'i.ano as anio');
+      .select(
+        'au.slug as autor_slug',
+        'a.texto as texto',
+        'i.ano as anio',
+        'a.slug as article_slug',
+        'a.titulo as article_titulo',
+      );
 
     const aniosPorAutor = new Map<string, Map<number, string[]>>();
+    const articulosPorAutorAnio = new Map<string, Map<number, { slug: string; titulo: string }[]>>();
     const totalArticulosPorAutor = new Map<string, number>();
     for (const fila of filasPorAnio) {
       totalArticulosPorAutor.set(fila.autor_slug, (totalArticulosPorAutor.get(fila.autor_slug) ?? 0) + 1);
       if (fila.anio === null) continue;
+
       const porAnio = aniosPorAutor.get(fila.autor_slug) ?? new Map<number, string[]>();
       const textos = porAnio.get(fila.anio) ?? [];
       textos.push(fila.texto ?? '');
       porAnio.set(fila.anio, textos);
       aniosPorAutor.set(fila.autor_slug, porAnio);
+
+      const porAnioArts = articulosPorAutorAnio.get(fila.autor_slug) ?? new Map<number, { slug: string; titulo: string }[]>();
+      const arts = porAnioArts.get(fila.anio) ?? [];
+      arts.push({ slug: fila.article_slug, titulo: fila.article_titulo });
+      porAnioArts.set(fila.anio, arts);
+      articulosPorAutorAnio.set(fila.autor_slug, porAnioArts);
     }
 
     const puntosTrayectoria: { autorSlug: string; anio: number }[] = [];
@@ -1042,6 +1060,7 @@ export default {
             ? (1 - cosineSimilarity(vector, centroide, vocabulario) - mediaNorma) / stdNorma
             : 0,
           num_articulos: aniosPorAutor.get(slug)?.get(punto.anio)?.length ?? 0,
+          articulos: articulosPorAutorAnio.get(slug)?.get(punto.anio) ?? [],
         }))
         .sort((a, b) => a.año - b.año);
 
