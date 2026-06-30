@@ -7,7 +7,11 @@
 const { Client } = require('pg');
 
 const client = new Client({
-  connectionString: process.env.DATABASE_URL,
+  host:     process.env.DATABASE_HOST     || 'localhost',
+  port:     parseInt(process.env.DATABASE_PORT || '5432', 10),
+  database: process.env.DATABASE_NAME     || 'strapi',
+  user:     process.env.DATABASE_USERNAME || 'strapi',
+  password: process.env.DATABASE_PASSWORD || '',
 });
 
 function esPoema(html) {
