@@ -19,6 +19,12 @@ export default {
       config: { auth: false },
     },
     {
+      method: 'POST',
+      path: '/analisis/interpretar-deriva',
+      handler: 'analisis.interpretarDeriva',
+      config: { auth: false },
+    },
+    {
       method: 'GET',
       path: '/analisis/cadenas-lexicas',
       handler: 'analisis.cadenasLexicas',

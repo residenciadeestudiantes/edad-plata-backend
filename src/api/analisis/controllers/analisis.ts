@@ -1082,6 +1082,104 @@ export default {
     return ctx.send({ norma, autores });
   },
 
+  async interpretarDeriva(ctx: Context) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return ctx.internalServerError('OPENAI_API_KEY no configurada.');
+
+    const body = ctx.request.body as {
+      modo?: string;
+      norma?: { num_autores: number; num_articulos: number; media: number; std: number };
+      autores?: { nombre: string; num_articulos: number; trayectoria: { año: number; distancia: number }[] }[];
+    };
+
+    const { modo = 'prosa', norma, autores } = body;
+
+    if (!norma || !Array.isArray(autores) || autores.length === 0) {
+      return ctx.badRequest('Se requieren "norma" y "autores" en el cuerpo de la petición.');
+    }
+
+    function tendencia(tray: { año: number; distancia: number }[]): string {
+      if (tray.length < 2) return 'Sin datos suficientes';
+      const diff = tray[tray.length - 1].distancia - tray[0].distancia;
+      if (diff > 0.5) return 'Innovador (z-score creciente: el autor se aleja de la norma)';
+      if (diff < -0.3) return 'Convergente (z-score decreciente: el autor se acerca a la norma)';
+      return 'Estable (variación inferior a 0,3σ)';
+    }
+
+    const modoLabel = modo === 'poesia' ? 'poesía' : 'prosa';
+    const autoresTexto = autores.map((a) => {
+      const puntos = a.trayectoria
+        .map((p) => `  - ${p.año}: z = ${p.distancia.toFixed(2)}`)
+        .join('\n');
+      return `**${a.nombre}** (${a.num_articulos} textos analizados)\nTendencia: ${tendencia(a.trayectoria)}\nTrayectoria:\n${puntos}`;
+    }).join('\n\n');
+
+    const prompt = `Eres un especialista en literatura española de la Edad de Plata (1898-1939) con conocimiento profundo de sus movimientos, autores y estilos.
+
+Se te facilita el análisis de deriva estilística de ${autores.length} autor${autores.length > 1 ? 'es' : ''}, calculado mediante vectores TF-IDF coseno y normalizado como z-score respecto al centroide léxico del corpus de revistas de la Edad de Plata.
+
+**Clave de lectura:**
+- z = 0: el autor coincide exactamente con la media léxica del corpus
+- Zona de norma: [-1σ, +1σ] — aquí se sitúa el 68 % de los autores
+- Umbral de singularidad: > +2σ — el 2,5 % más distintivo
+- z negativo: léxico más convergente con la norma de lo habitual
+- z positivo alto: léxico muy alejado de la norma
+
+**Modo analizado:** ${modoLabel}
+**Estadísticos del corpus:** μ = ${norma.media.toFixed(3)}, σ = ${norma.std.toFixed(3)} (basados en ${norma.num_autores} autores, ${norma.num_articulos} textos)
+
+**Autores:**
+${autoresTexto}
+
+Escribe una interpretación literaria e histórica de estos resultados en español, con tono académico pero accesible para un investigador. Incluye:
+1. Una lectura de la trayectoria de cada autor (¿experimenta una evolución?, ¿es coherente con su posición en el campo literario?)
+2. Si hay varios autores, una comparativa de sus trayectorias (convergencias, divergencias, épocas de aproximación)
+3. Contextualización en los movimientos literarios del período (modernismo, noventayochismo, vanguardias, generación del 27, etc.) cuando sea pertinente
+4. Una valoración sintética final
+
+Responde en 4-6 párrafos concisos. No uses encabezados ni listas; texto corrido.`;
+
+    const https = await import('https');
+    const interpretacion: string = await new Promise((resolve, reject) => {
+      const reqBody = JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1200,
+        temperature: 0.6,
+      });
+      const req = https.default.request(
+        {
+          hostname: 'api.openai.com',
+          path: '/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Length': Buffer.byteLength(reqBody),
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(Buffer.concat(chunks).toString());
+              if (json.error) return reject(new Error(json.error.message));
+              resolve(json.choices[0].message.content as string);
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.write(reqBody);
+      req.end();
+    });
+
+    return ctx.send({ interpretacion });
+  },
+
   async cadenasLexicas(ctx: Context) {
     const palabraRaw = ctx.query.palabra;
     if (!palabraRaw || typeof palabraRaw !== 'string' || palabraRaw.trim().length === 0) {
