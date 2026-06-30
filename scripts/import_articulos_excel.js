@@ -11,12 +11,19 @@
 //   - Omite artículos cuyo id_articulo_legado ya existe en BD
 //   - Resuelve la issue via id_numero_legado → id en BD
 //   - Crea dos filas por artículo (draft + published)
+//   - Descarga y enlaza las imágenes de la columna "imagenes" (URLs separadas por " | ")
 
 'use strict';
 
 const { Client } = require('pg');
 const crypto     = require('crypto');
 const XLSX       = require('xlsx');
+const https      = require('https');
+const http       = require('http');
+const fs         = require('fs');
+const pathLib    = require('path');
+
+const UPLOADS_DIR = '/app/public/uploads';
 
 // ── Argumentos ────────────────────────────────────────────────────────────────
 
@@ -162,6 +169,9 @@ async function run() {
     const idioma           = str(row.idioma) || 'Español';
     const es_anuncio       = bool(row.anuncio);
     const posicion         = num(row.posicion);
+    const imagenesUrls     = str(row.imagenes)
+      ? str(row.imagenes).split('|').map(u => u.trim()).filter(Boolean)
+      : [];
 
     let slug = slugify(titulo) || `articulo-${Date.now()}`;
     const { rows: slugExist } = await db.query(
@@ -200,6 +210,19 @@ async function run() {
         [pub.id, issue.publishedId, posicion]
       );
 
+      // Imágenes
+      for (let i = 0; i < imagenesUrls.length; i++) {
+        try {
+          process.stdout.write(`    ↓ Imagen ${i + 1}/${imagenesUrls.length}… `);
+          const fileId = await importarImagen(imagenesUrls[i], titulo);
+          await enlazarImagenArticulo(fileId, draft.id, i + 1);
+          await enlazarImagenArticulo(fileId, pub.id, i + 1);
+          console.log(`✓ file_id=${fileId}`);
+        } catch (imgErr) {
+          console.error(`\n    ✗ Error imagen ${i + 1}: ${imgErr.message}`);
+        }
+      }
+
       console.log(`✓ n.º legado ${id_numero_legado} pos.${posicion ?? '?'} "${titulo}"`);
       creados++;
     } catch (err) {
@@ -210,6 +233,89 @@ async function run() {
 
   console.log(`\nResultado: ${creados} creados · ${omitidos} omitidos · ${errores} errores.`);
   await db.end();
+}
+
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http;
+    const file  = fs.createWriteStream(dest);
+    proto.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        file.close();
+        try { fs.unlinkSync(dest); } catch (_) {}
+        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        try { fs.unlinkSync(dest); } catch (_) {}
+        return reject(new Error(`HTTP ${res.statusCode} para ${url}`));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+    }).on('error', (err) => {
+      try { fs.unlinkSync(dest); } catch (_) {}
+      reject(err);
+    });
+  });
+}
+
+async function importarImagen(url, altText) {
+  const sharp   = require('sharp');
+  const ext     = pathLib.extname(new URL(url).pathname) || '.jpg';
+  const hash    = crypto.randomBytes(6).toString('hex');
+  const base    = `articulo_img_${hash}`;
+  const tmpPath = `/tmp/${base}${ext}`;
+  const mainName = `${base}${ext}`;
+  const mainPath = pathLib.join(UPLOADS_DIR, mainName);
+
+  await downloadFile(url, tmpPath);
+
+  const meta = await sharp(tmpPath).metadata();
+  const VARIANTES = [
+    { suffix: '_thumbnail', width: 156 },
+    { suffix: '_small',     width: 500 },
+    { suffix: '_medium',    width: 750 },
+    { suffix: '_large',     width: 1000 },
+  ];
+
+  const formats = {};
+  for (const v of VARIANTES) {
+    const outName = `${base}${v.suffix}${ext}`;
+    const buf = await sharp(tmpPath)
+      .resize({ width: v.width, withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    fs.writeFileSync(pathLib.join(UPLOADS_DIR, outName), buf);
+    const rm = await sharp(buf).metadata();
+    formats[v.suffix.slice(1)] = {
+      name: outName, hash: `${base}${v.suffix}`, ext,
+      mime: 'image/jpeg', width: rm.width, height: rm.height,
+      size: buf.length / 1024, url: `/uploads/${outName}`,
+    };
+  }
+
+  fs.copyFileSync(tmpPath, mainPath);
+  try { fs.unlinkSync(tmpPath); } catch (_) {}
+
+  const fileSize = fs.statSync(mainPath).size / 1024;
+
+  const { rows: [file] } = await db.query(
+    `INSERT INTO files
+       (name, alternative_text, caption, width, height, formats, hash, ext, mime, size, url, provider, created_at, updated_at)
+     VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,'local',NOW(),NOW())
+     RETURNING id`,
+    [mainName, altText || null, meta.width, meta.height, JSON.stringify(formats), base, ext, 'image/jpeg', fileSize, `/uploads/${mainName}`]
+  );
+  return file.id;
+}
+
+async function enlazarImagenArticulo(fileId, articleId, orden) {
+  await db.query(
+    `INSERT INTO files_related_mph (file_id, related_id, related_type, field, "order")
+     VALUES ($1,$2,'api::article.article','imagenes',$3)
+     ON CONFLICT DO NOTHING`,
+    [fileId, articleId, orden]
+  );
 }
 
 function extraerPiesImagen(html) {
