@@ -1612,11 +1612,16 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return ctx.internalServerError('OPENAI_API_KEY no configurada.');
 
+    const publicacionSlug =
+      typeof ctx.query.publicacion === 'string' ? ctx.query.publicacion.trim() : '';
+
     const UMBRAL = 0.28;
     const knex = strapi.db.connection;
 
     const categorias = await readCategorias(knex);
 
+    const wherePublicacion = publicacionSlug ? 'AND p.slug = ?' : '';
+    const params = publicacionSlug ? [publicacionSlug] : [];
     const { rows: anunciosRaw } = await knex.raw(`
       SELECT a.id, a.embedding::text AS embedding_str, i.ano AS anio
       FROM articles a
@@ -1629,7 +1634,8 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
         AND a.published_at IS NOT NULL
         AND i.published_at IS NOT NULL
         AND p.published_at IS NOT NULL
-    `);
+        ${wherePublicacion}
+    `, params);
 
     type AnuncioRow = { id: number; embedding_str: string; anio: number | null };
     const anuncios: { id: number; vec: number[]; anio: number }[] = (anunciosRaw as AnuncioRow[])
@@ -1809,6 +1815,29 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
     _cacheCatEmbeddings.delete(cat.nombre);
 
     return ctx.send({ id, activa: nuevaActiva });
+  },
+
+  async publicidadPublicaciones(ctx: Context) {
+    const knex = strapi.db.connection;
+    const rows: { slug: string; titulo: string; num_anuncios: string }[] = await knex(
+      'publications as p'
+    )
+      .innerJoin('issues_publication_lnk as ipl', 'ipl.publication_id', 'p.id')
+      .innerJoin('issues as i', 'i.id', 'ipl.issue_id')
+      .innerJoin('articles_issue_lnk as ail', 'ail.issue_id', 'i.id')
+      .innerJoin('articles as a', 'a.id', 'ail.article_id')
+      .where('a.es_anuncio', true)
+      .whereNotNull('a.embedding')
+      .whereNotNull('a.published_at')
+      .whereNotNull('i.published_at')
+      .whereNotNull('p.published_at')
+      .select('p.slug', 'p.titulo')
+      .countDistinct('a.id as num_anuncios')
+      .groupBy('p.slug', 'p.titulo')
+      .orderBy('num_anuncios', 'desc');
+    return ctx.send({
+      publicaciones: rows.map((r) => ({ ...r, num_anuncios: Number(r.num_anuncios) })),
+    });
   },
 
   // Tab 3: lenguaje publicitario (sucesores/predecesores y entropía), igual

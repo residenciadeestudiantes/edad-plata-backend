@@ -86,6 +86,12 @@ export default {
     },
     {
       method: 'GET',
+      path: '/analisis/publicidad/publicaciones',
+      handler: 'analisis.publicidadPublicaciones',
+      config: { auth: false },
+    },
+    {
+      method: 'GET',
       path: '/analisis/publicidad/cadenas-lexicas',
       handler: 'analisis.publicidadCadenasLexicas',
       config: { auth: false },
