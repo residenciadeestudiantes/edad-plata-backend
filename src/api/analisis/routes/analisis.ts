@@ -62,6 +62,30 @@ export default {
     },
     {
       method: 'GET',
+      path: '/analisis/publicidad/categorias',
+      handler: 'analisis.listarCategorias',
+      config: { auth: false },
+    },
+    {
+      method: 'POST',
+      path: '/analisis/publicidad/descubrir-categorias',
+      handler: 'analisis.descubrirCategorias',
+      config: { auth: false },
+    },
+    {
+      method: 'POST',
+      path: '/analisis/publicidad/guardar-categorias',
+      handler: 'analisis.guardarCategorias',
+      config: { auth: false },
+    },
+    {
+      method: 'POST',
+      path: '/analisis/publicidad/toggle-categoria',
+      handler: 'analisis.toggleCategoria',
+      config: { auth: false },
+    },
+    {
+      method: 'GET',
       path: '/analisis/publicidad/cadenas-lexicas',
       handler: 'analisis.publicidadCadenasLexicas',
       config: { auth: false },

@@ -272,36 +272,85 @@ const UMBRAL_POCOS_ARTICULOS_AUTOR = 3;
 
 const FRECUENCIA_MINIMA_FIABLE = 5;
 
-// Categorías curadas para el análisis de evolución tecnológica en la
-// publicidad (Tab 2 de Análisis de Publicidad). Las palabras clave van sin
-// tildes porque se comparan contra texto normalizado con stripDiacritics.
-// Categorías tecnológicas con frase conceptual para búsqueda semántica.
-// El embedding de cada frase se genera una vez y se cachea en memoria.
-const CATEGORIAS_SEMANTICAS: { categoria: string; concepto: string }[] = [
+// Categorías iniciales que se insertan en publicidad_categorias si la tabla está vacía.
+const CATEGORIAS_INICIALES = [
   {
-    categoria: 'Automóviles',
+    nombre: 'Automóviles',
     concepto: 'automóvil coche vehículo de motor gasolina neumático carrocería conducción automovilismo garage',
   },
   {
-    categoria: 'Radio',
+    nombre: 'Radio',
     concepto: 'radio receptor radiofónico emisión radiofónica altavoz galena ondas radiofonía radiorreceptor',
   },
   {
-    categoria: 'Cinematógrafo',
+    nombre: 'Cinematógrafo',
     concepto: 'cine cinematógrafo película proyección fotográfica cinematografía film cámara fotográfica',
   },
   {
-    categoria: 'Teléfono',
+    nombre: 'Teléfono',
     concepto: 'teléfono telefonía comunicación telefónica centralita aparato telefónico',
   },
   {
-    categoria: 'Electrodomésticos',
+    nombre: 'Electrodomésticos',
     concepto: 'electrodoméstico nevera frigorífico lavadora aspiradora plancha aparato eléctrico del hogar ventilador',
+  },
+  {
+    nombre: 'Máquinas de escribir',
+    concepto: 'máquina de escribir mecanografía teclado continental mercedes typewriter oficina mecanógrafo',
+  },
+  {
+    nombre: 'Máquinas calculadoras',
+    concepto: 'máquina calculadora sumadora calculatriz máquina aritmética lipsia cálculo contabilidad',
+  },
+  {
+    nombre: 'Fotografía',
+    concepto: 'fotografía cámara fotográfica revelado material fotográfico objetivos instantánea retrato fotógrafo',
+  },
+  {
+    nombre: 'Libros y editoriales',
+    concepto: 'libro editorial publicación librería obras literarias volumen edición imprenta catálogo obras completas',
+  },
+  {
+    nombre: 'Hoteles y turismo',
+    concepto: 'hotel parador hostal alojamiento turismo viaje albergue hospedaje pensión restaurante',
+  },
+  {
+    nombre: 'Farmacia y laboratorios',
+    concepto: 'farmacia medicamento laboratorio farmacéutico producto biológico suero medicina remedio',
+  },
+  {
+    nombre: 'Perfumería e higiene',
+    concepto: 'perfumería jabón colonia higiene cosmética perfume belleza tocador aseo personal crema',
   },
 ];
 
-// Cache de embeddings de categorías (se generan en la primera llamada)
+// Cache de embeddings de categorías (clave: nombre de categoría)
 const _cacheCatEmbeddings = new Map<string, number[]>();
+
+// Auto-crea la tabla publicidad_categorias y la puebla con CATEGORIAS_INICIALES si está vacía.
+let _categoriasTableReady = false;
+async function initCategoriasTable(knex: any) {
+  if (_categoriasTableReady) return;
+  await knex.schema.createTableIfNotExists('publicidad_categorias', (table: any) => {
+    table.increments('id');
+    table.string('nombre', 200).notNullable();
+    table.text('concepto').notNullable();
+    table.boolean('activa').notNullable().defaultTo(true);
+    table.timestamp('created_at').notNullable().defaultTo(knex.fn.now());
+  });
+  const row = await knex('publicidad_categorias').count('id as n').first();
+  if (Number(row?.n) === 0) {
+    await knex('publicidad_categorias').insert(CATEGORIAS_INICIALES);
+  }
+  _categoriasTableReady = true;
+}
+
+type CategoriaRow = { id: number; nombre: string; concepto: string; activa: boolean };
+
+async function readCategorias(knex: any): Promise<CategoriaRow[]> {
+  await initCategoriasTable(knex);
+  return knex('publicidad_categorias').where({ activa: true }).orderBy('id');
+}
 
 function cosineSimilitud(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
@@ -1563,10 +1612,11 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return ctx.internalServerError('OPENAI_API_KEY no configurada.');
 
-    const UMBRAL = 0.28; // similitud coseno mínima para asignar un anuncio a una categoría
+    const UMBRAL = 0.28;
     const knex = strapi.db.connection;
 
-    // Cargar embeddings de anuncios desde la BD
+    const categorias = await readCategorias(knex);
+
     const { rows: anunciosRaw } = await knex.raw(`
       SELECT a.id, a.embedding::text AS embedding_str, i.ano AS anio
       FROM articles a
@@ -1590,13 +1640,12 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
         vec: JSON.parse(r.embedding_str) as number[],
       }));
 
-    // Generar (o recuperar de caché) el embedding de cada categoría
     const categoriasConSerie = await Promise.all(
-      CATEGORIAS_SEMANTICAS.map(async ({ categoria, concepto }) => {
-        let catVec = _cacheCatEmbeddings.get(categoria);
+      categorias.map(async ({ nombre, concepto }) => {
+        let catVec = _cacheCatEmbeddings.get(nombre);
         if (!catVec) {
           catVec = await getEmbeddingTecnologia(concepto, apiKey);
-          _cacheCatEmbeddings.set(categoria, catVec);
+          _cacheCatEmbeddings.set(nombre, catVec);
         }
 
         const menciones = new Map<number, number>();
@@ -1608,7 +1657,7 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
         }
 
         return {
-          categoria,
+          categoria: nombre,
           palabras_clave: [concepto],
           similitud_umbral: UMBRAL,
           serie: [...menciones.entries()]
@@ -1619,6 +1668,147 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
     );
 
     return ctx.send({ total_anuncios: anuncios.length, categorias: categoriasConSerie });
+  },
+
+  async listarCategorias(ctx: Context) {
+    const knex = strapi.db.connection;
+    await initCategoriasTable(knex);
+    const categorias = await knex('publicidad_categorias').orderBy('id');
+    return ctx.send({ categorias });
+  },
+
+  async descubrirCategorias(ctx: Context) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return ctx.internalServerError('OPENAI_API_KEY no configurada.');
+
+    const knex = strapi.db.connection;
+    await initCategoriasTable(knex);
+
+    const categoriasActuales: { nombre: string }[] = await knex('publicidad_categorias').select('nombre');
+    const nombresActuales = categoriasActuales.map((c) => c.nombre).join(', ');
+
+    const { rows: titulosRaw } = await knex.raw(`
+      SELECT DISTINCT titulo FROM articles
+      WHERE es_anuncio = true AND published_at IS NOT NULL
+      ORDER BY titulo LIMIT 250
+    `);
+    const titulosTexto = (titulosRaw as { titulo: string }[])
+      .map((r) => `- ${r.titulo}`)
+      .join('\n');
+
+    const prompt = `Eres un experto en historia cultural y publicidad española del siglo XX.
+
+Se te proporciona una lista de títulos de anuncios publicados en revistas literarias y culturales españolas entre 1900 y 1940 (Edad de Plata).
+
+CATEGORÍAS YA EXISTENTES (no las repitas):
+${nombresActuales}
+
+TÍTULOS DE ANUNCIOS DEL CORPUS:
+${titulosTexto}
+
+TAREA:
+Identifica entre 5 y 10 nuevas categorías temáticas de productos, servicios o sectores económicos que estén claramente representadas en estos títulos y que NO estén ya cubiertas por las categorías existentes.
+
+Para cada categoría, proporciona:
+- "nombre": nombre corto y descriptivo en español (máximo 4 palabras)
+- "concepto": frase descriptiva de 8-15 palabras clave en español que captura la esencia semántica de la categoría, útil para búsqueda vectorial
+
+Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este formato exacto:
+[
+  { "nombre": "Nombre de categoría", "concepto": "palabras clave descriptivas de la categoría" },
+  ...
+]`;
+
+    const https = await import('https');
+    const respuestaGPT: string = await new Promise((resolve, reject) => {
+      const reqBody = JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 800,
+        temperature: 0.3,
+      });
+      const req = https.default.request(
+        {
+          hostname: 'api.openai.com',
+          path: '/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Length': Buffer.byteLength(reqBody),
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(Buffer.concat(chunks).toString());
+              if (json.error) return reject(new Error(json.error.message));
+              resolve(json.choices[0].message.content as string);
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.write(reqBody);
+      req.end();
+    });
+
+    let sugerencias: { nombre: string; concepto: string }[] = [];
+    try {
+      const clean = respuestaGPT.replace(/```json\n?|\n?```/g, '').trim();
+      sugerencias = JSON.parse(clean);
+    } catch {
+      return ctx.internalServerError('El modelo no devolvió JSON válido.');
+    }
+
+    return ctx.send({ sugerencias });
+  },
+
+  async guardarCategorias(ctx: Context) {
+    const body = ctx.request.body as { categorias?: { nombre: string; concepto: string }[] };
+    if (!Array.isArray(body?.categorias) || body.categorias.length === 0) {
+      return ctx.badRequest('Se requiere un array "categorias".');
+    }
+
+    const knex = strapi.db.connection;
+    await initCategoriasTable(knex);
+
+    const existing: { nombre: string }[] = await knex('publicidad_categorias').select('nombre');
+    const existingNames = new Set(existing.map((c) => c.nombre.toLowerCase()));
+
+    const toInsert = body.categorias.filter(
+      (c) => c.nombre?.trim() && c.concepto?.trim() && !existingNames.has(c.nombre.trim().toLowerCase())
+    );
+
+    if (toInsert.length > 0) {
+      await knex('publicidad_categorias').insert(
+        toInsert.map((c) => ({ nombre: c.nombre.trim(), concepto: c.concepto.trim(), activa: true }))
+      );
+    }
+
+    return ctx.send({ insertadas: toInsert.length });
+  },
+
+  async toggleCategoria(ctx: Context) {
+    const body = ctx.request.body as { id?: number };
+    const id = Number(body?.id);
+    if (!id) return ctx.badRequest('Se requiere "id".');
+
+    const knex = strapi.db.connection;
+    await initCategoriasTable(knex);
+
+    const cat: CategoriaRow | undefined = await knex('publicidad_categorias').where({ id }).first();
+    if (!cat) return ctx.notFound('Categoría no encontrada.');
+
+    const nuevaActiva = !cat.activa;
+    await knex('publicidad_categorias').where({ id }).update({ activa: nuevaActiva });
+    _cacheCatEmbeddings.delete(cat.nombre);
+
+    return ctx.send({ id, activa: nuevaActiva });
   },
 
   // Tab 3: lenguaje publicitario (sucesores/predecesores y entropía), igual
