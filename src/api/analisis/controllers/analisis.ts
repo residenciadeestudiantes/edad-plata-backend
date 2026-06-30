@@ -1038,7 +1038,9 @@ export default {
         .filter(({ punto }) => punto.autorSlug === slug)
         .map(({ punto, vector }) => ({
           año: punto.anio,
-          distancia: 1 - cosineSimilarity(vector, centroide, vocabulario),
+          distancia: stdNorma > 0
+            ? (1 - cosineSimilarity(vector, centroide, vocabulario) - mediaNorma) / stdNorma
+            : 0,
           num_articulos: aniosPorAutor.get(slug)?.get(punto.anio)?.length ?? 0,
         }))
         .sort((a, b) => a.año - b.año);
