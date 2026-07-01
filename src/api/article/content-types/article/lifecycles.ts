@@ -58,9 +58,116 @@ function esPoema(html: string): boolean {
   return /class="(?:Estrofa|TítuloP)"/.test(html);
 }
 
+// Clases de contenido que no deben aparecer dentro de un <div class="imgbox">
+const CONTENT_OUTSIDE_IMGBOX = new Set([
+  'Normal', 'NormalN', 'NormalT', 'NormalTX', 'NormalNX',
+  'Cita', 'CitaX', 'EstrofaCita', 'EstrofaCitaX',
+  'Estrofa', 'EstrofaI', 'EstrofaT', 'EstrofaTX',
+  'Fuente', 'FuenteX',
+  'Título', 'Titulo', 'TítuloP', 'TítuloS', 'Subtítulo', 'SubtítuloP',
+  'PersonajeT', 'AcotaciónT', 'AcotaciónTX',
+  'Autor', 'AutorP', 'Numeración', 'Anatomía',
+]);
+
+function divBalance(html: string): number {
+  return (html.match(/<div/g)?.length ?? 0) - (html.match(/<\/div>/g)?.length ?? 0);
+}
+
+// Elimina </div> que aparecen con la pila vacía (cierres sobrantes)
+function removeExtraCloses(html: string): string {
+  const re = /<div\s[^>]*class="([^"]*)"[^>]*>/g;
+  const CLOSE = '</div>';
+  const parts: string[] = [];
+  const stack: string[] = [];
+  let pos = 0;
+
+  while (pos < html.length) {
+    re.lastIndex = pos;
+    const om = re.exec(html);
+    const ci = html.indexOf(CLOSE, pos);
+    const openAt = om ? om.index : Infinity;
+    const closeAt = ci >= 0 ? ci : Infinity;
+
+    if (!isFinite(openAt) && !isFinite(closeAt)) { parts.push(html.slice(pos)); break; }
+
+    if (openAt <= closeAt) {
+      parts.push(html.slice(pos, openAt));
+      parts.push(html.slice(openAt, openAt + om![0].length));
+      stack.push(om![1]);
+      pos = openAt + om![0].length;
+    } else {
+      parts.push(html.slice(pos, closeAt));
+      if (stack.length > 0) { stack.pop(); parts.push(CLOSE); }
+      pos = closeAt + CLOSE.length;
+    }
+  }
+  return parts.join('');
+}
+
+// Inyecta </div> antes del primer div de contenido real que aparece dentro de un imgbox sin cerrar
+function fixUnclosedImgbox(html: string): string {
+  const re = /<div\s[^>]*class="([^"]*)"[^>]*>/g;
+  const CLOSE = '</div>';
+  const parts: string[] = [];
+  const stack: string[] = [];
+  let pos = 0;
+  let changed = false;
+
+  while (pos < html.length) {
+    re.lastIndex = pos;
+    const om = re.exec(html);
+    const ci = html.indexOf(CLOSE, pos);
+    const openAt = om ? om.index : Infinity;
+    const closeAt = ci >= 0 ? ci : Infinity;
+
+    if (!isFinite(openAt) && !isFinite(closeAt)) { parts.push(html.slice(pos)); break; }
+
+    if (openAt <= closeAt) {
+      parts.push(html.slice(pos, openAt));
+      const cls = om![1];
+      if (CONTENT_OUTSIDE_IMGBOX.has(cls) && stack.includes('imgbox')) {
+        parts.push('</div>\n');
+        const idx = stack.lastIndexOf('imgbox');
+        stack.splice(idx, 1);
+        changed = true;
+      }
+      parts.push(html.slice(openAt, openAt + om![0].length));
+      stack.push(cls);
+      pos = openAt + om![0].length;
+    } else {
+      parts.push(html.slice(pos, closeAt));
+      parts.push(CLOSE);
+      if (stack.length > 0) stack.pop();
+      pos = closeAt + CLOSE.length;
+    }
+  }
+  return changed ? parts.join('') : html;
+}
+
+// Corrige divs desbalanceados: elimina cierres sobrantes, cierra imgboxes abiertos,
+// y si aún sobran aperturas (Normal/Cita sin cerrar), añade </div> al final.
+function balancearDivs(html: string): string {
+  let result = html;
+  let bal = divBalance(result);
+  if (bal === 0) return result;
+
+  if (bal < 0) result = removeExtraCloses(result);
+
+  bal = divBalance(result);
+  if (bal > 0) result = fixUnclosedImgbox(result);
+
+  bal = divBalance(result);
+  while (bal > 0) {
+    result = result.trimEnd() + '\n</div>\n';
+    bal--;
+  }
+  return result;
+}
+
 function procesarTexto(data: ArticleData) {
   if (data.texto) {
     data.texto = limpiarTexto(data.texto);
+    data.texto = balancearDivs(data.texto);
     data.texto_plano = htmlAPlanoTexto(data.texto);
     data.pies_imagen = extraerPiesImagen(data.texto);
     data.es_poema = esPoema(data.texto);
