@@ -71,6 +71,11 @@ function htmlATextoPlano(html) {
     .trim() || null;
 }
 
+function esPoema(html) {
+  if (!html) return false;
+  return /class="(?:Estrofa|TítuloP)"/.test(html);
+}
+
 function num(v) { const n = parseInt(String(v), 10); return isNaN(n) ? null : n; }
 function str(v) { const s = String(v ?? '').trim(); return s || null; }
 function bool(v) { return String(v).trim().toUpperCase() === 'TRUE'; }
@@ -184,6 +189,7 @@ async function run() {
     const textoOcr         = str(row.texto_ocr_anuncios);
     const textoPlano       = htmlATextoPlano(texto);
     const piesImagen       = extraerPiesImagen(texto || '');
+    const es_poema         = esPoema(texto);
     const idioma           = str(row.idioma) || 'Español';
     const es_anuncio       = bool(row.anuncio);
     const posicion         = num(row.posicion);
@@ -212,17 +218,17 @@ async function run() {
     const docId = genDocumentId();
     try {
       const campos = `document_id, titulo, slug, texto, texto_plano, texto_ocr_anuncios,
-                      pies_imagen, idioma, es_anuncio, posicion, id_articulo_legado,
+                      pies_imagen, es_poema, idioma, es_anuncio, posicion, id_articulo_legado,
                       created_at, updated_at, published_at`;
       const vals   = [
         docId, titulo, slug, texto, textoPlano, textoOcr,
-        piesImagen, idioma, es_anuncio, posicion, id_articulo_legado,
+        piesImagen, es_poema, idioma, es_anuncio, posicion, id_articulo_legado,
         now,
       ];
 
       // Draft
       const { rows: [draft] } = await db.query(
-        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,NULL) RETURNING id`,
+        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,NULL) RETURNING id`,
         vals
       );
       await db.query(
@@ -238,7 +244,7 @@ async function run() {
 
       // Published
       const { rows: [pub] } = await db.query(
-        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$12) RETURNING id`,
+        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$13) RETURNING id`,
         vals
       );
       await db.query(
