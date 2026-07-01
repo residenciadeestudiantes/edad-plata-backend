@@ -17,10 +17,7 @@ function limpiarTexto(texto: string): string {
     .replace(/<div class="Autor">[\s\S]*?<\/div>/g, '')
     .replace(/<div class="Autortexto">[\s\S]*?<\/div>/g, '')
     .replace(/<div class="DescrI">[\s\S]*?<\/div>/g, '')
-    .replace(
-      /(<div class="Normal"><a class="page"[\s\S]*?<\/a><\/div>)/g,
-      '<!-- $1 -->'
-    );
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '');
 }
 
 function htmlAPlanoTexto(html: string): string {
