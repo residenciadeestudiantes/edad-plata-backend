@@ -11,6 +11,8 @@ import {
   obtenerFechaConstruccion,
   calcularProbabilidades,
   calcularEntropiaShannon,
+  limpiarHtml,
+  tokenizarParaBigramas,
   type ProbabilidadToken,
 } from '../services/bigramas';
 import { STOPWORDS } from '../services/stopwords';
@@ -1876,6 +1878,35 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
     const entropiaMaxima = numSucesoresDistintos > 0 ? Math.log2(numSucesoresDistintos) : 0;
     const entropiaNormalizada = entropiaMaxima > 0 ? entropia / entropiaMaxima : 0;
 
+    // Frecuencia desglosada por revista
+    const knex = strapi.db.connection;
+    const anunciosRevista: { texto: string | null; revista_slug: string; revista_titulo: string }[] =
+      await knex('articles as a')
+        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+        .where('a.es_anuncio', true)
+        .andWhere('a.published_at', 'is not', null)
+        .andWhere('i.published_at', 'is not', null)
+        .andWhere('p.published_at', 'is not', null)
+        .select('a.texto_ocr_anuncios as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
+
+    const porRevistaMap = new Map<string, { revista: string; slug: string; frecuencia: number }>();
+    for (const anuncio of anunciosRevista) {
+      const tokens = tokenizarParaBigramas(limpiarHtml(anuncio.texto));
+      const cuenta = tokens.filter((t) => t === palabra).length;
+      if (cuenta === 0) continue;
+      const entry = porRevistaMap.get(anuncio.revista_slug) ?? {
+        revista: anuncio.revista_titulo,
+        slug: anuncio.revista_slug,
+        frecuencia: 0,
+      };
+      entry.frecuencia += cuenta;
+      porRevistaMap.set(anuncio.revista_slug, entry);
+    }
+    const por_revista = [...porRevistaMap.values()].sort((a, b) => b.frecuencia - a.frecuencia);
+
     return ctx.send({
       palabra,
       corpus: {
@@ -1889,6 +1920,7 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
         entropiaMaxima,
         interpretacion: interpretarEntropia(entropiaNormalizada, fiable),
       },
+      por_revista,
       metadatos: {
         fechaConstruccionIndice: obtenerFechaConstruccion('publicidad')?.toISOString() ?? null,
         totalArticulos: indice.totalArticulos,

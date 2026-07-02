@@ -43,7 +43,7 @@ export function obtenerFechaConstruccion(corpus: TipoCorpus = 'literario'): Date
 // Limpieza de HTML equivalente a la del resto de endpoints de análisis, más
 // la eliminación explícita de enlaces javascript:dispatch(...) que pueden
 // quedar en textos importados sin sanear.
-function limpiarHtml(html: string | null): string {
+export function limpiarHtml(html: string | null): string {
   if (!html) return '';
 
   return html
@@ -67,7 +67,7 @@ function limpiarHtml(html: string | null): string {
 // internos de palabras compuestas (p. ej. "anglo-americano" se conserva
 // como un solo token; un guion suelto al principio o final de un token se
 // recorta). Filtra tokens de menos de 3 caracteres y stopwords.
-function tokenizarParaBigramas(texto: string): string[] {
+export function tokenizarParaBigramas(texto: string): string[] {
   return texto
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
