@@ -511,7 +511,7 @@ export default {
       'a.id as article_id',
       'a.titulo as articulo_titulo',
       'a.slug as articulo_slug',
-      'a.texto as texto',
+      'a.texto_plano as texto',
       'i.numero_orden as numero_orden',
       'i.ano as anio',
       'p.titulo as revista_titulo',
@@ -740,7 +740,7 @@ export default {
         .andWhere('a.published_at', 'is not', null)
         .whereIn('a.idioma', ['es', 'Español'])
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
-        .select('a.texto as texto');
+        .select('a.texto_plano as texto');
 
       return { author, articleRows };
     }
@@ -764,8 +764,8 @@ export default {
       return ctx.badRequest(`El autor "${autor2Data.author.nombre}" no tiene artículos en español.`);
     }
 
-    const texto1 = autor1Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
-    const texto2 = autor2Data.articleRows.map((row) => htmlToPlainText(row.texto)).join(' ');
+    const texto1 = autor1Data.articleRows.map((row) => row.texto ?? '').join(' ');
+    const texto2 = autor2Data.articleRows.map((row) => row.texto ?? '').join(' ');
 
     const tokens1 = tokenize(texto1, { incluirFuncionales });
     const tokens2 = tokenize(texto2, { incluirFuncionales });
@@ -860,9 +860,9 @@ export default {
       .andWhere('p.published_at', 'is not', null)
       .whereIn('a.idioma', ['es', 'Español'])
       .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
-      .select('a.texto as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
+      .select('a.texto_plano as texto', 'p.slug as revista_slug', 'p.titulo as revista_titulo');
 
-    const corpusCompleto = contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' ')));
+    const corpusCompleto = contarFrecuencias(tokenize(filas.map((f) => (f.texto ?? '')).join(' ')));
 
     let revista: { slug: string; titulo: string; num_articulos: number; palabras: PalabraFrecuencia[] } | null =
       null;
@@ -881,7 +881,7 @@ export default {
           titulo: publicacion.titulo,
           num_articulos: filasRevista.length,
           palabras: contarFrecuencias(
-            tokenize(filasRevista.map((f) => htmlToPlainText(f.texto)).join(' '))
+            tokenize(filasRevista.map((f) => (f.texto ?? '')).join(' '))
           ),
         };
       }
@@ -926,13 +926,13 @@ export default {
         .andWhere('p.published_at', 'is not', null)
         .whereIn('a.idioma', ['es', 'Español'])
         .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
-        .select('a.texto as texto');
+        .select('a.texto_plano as texto');
 
       return {
         slug,
         titulo: publicacion.titulo,
         num_articulos: filas.length,
-        palabras: contarFrecuencias(tokenize(filas.map((f) => htmlToPlainText(f.texto)).join(' '))),
+        palabras: contarFrecuencias(tokenize(filas.map((f) => (f.texto ?? '')).join(' '))),
       };
     }
 
@@ -1013,7 +1013,7 @@ export default {
     const slugsReferencia: string[] = [];
     const tokensReferencia: string[][] = [];
     for (const [slug, textos] of textosPorAutor) {
-      const tokens = tokenize(textos.map(htmlToPlainText).join(' '));
+      const tokens = tokenize(textos.join(' '));
       if (tokens.length === 0) continue;
       slugsReferencia.push(slug);
       tokensReferencia.push(tokens);
@@ -1044,7 +1044,7 @@ export default {
       .andWhere(filtroModo)
       .select(
         'au.slug as autor_slug',
-        'a.texto as texto',
+        'a.texto_plano as texto',
         'i.ano as anio',
         'a.slug as article_slug',
         'a.titulo as article_titulo',
@@ -1075,7 +1075,7 @@ export default {
     for (const slug of slugsSolicitados) {
       const porAnio = aniosPorAutor.get(slug) ?? new Map<number, string[]>();
       for (const [anio, textos] of porAnio) {
-        const tokens = tokenize(textos.map(htmlToPlainText).join(' '));
+        const tokens = tokenize(textos.join(' '));
         if (tokens.length === 0) continue;
         puntosTrayectoria.push({ autorSlug: slug, anio });
         tokensPuntos.push(tokens);
@@ -1458,7 +1458,7 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
       'a.id as article_id',
       'a.titulo as articulo_titulo',
       'a.slug as articulo_slug',
-      'a.texto as texto',
+      'a.texto_plano as texto',
       'i.numero_orden as numero_orden',
       'i.ano as anio',
       'p.titulo as revista_titulo',
@@ -1500,7 +1500,7 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
     }[] = [];
 
     for (const row of articleRows) {
-      const plainText = htmlToPlainText(row.texto);
+      const plainText = row.texto ?? '';
       const autores = authorsByArticle.get(row.article_id) ?? [];
 
       let fragmento: string | null = null;
@@ -1994,7 +1994,7 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
       if (revistaSlug) query = query.andWhere('p.slug', revistaSlug);
       if (numeroOrden !== null) query = query.andWhere('i.numero_orden', numeroOrden);
 
-      const columnaTexto = esAnuncio ? 'a.texto_ocr_anuncios' : 'a.texto';
+      const columnaTexto = esAnuncio ? 'a.texto_ocr_anuncios' : 'a.texto_plano';
       return query.select(`${columnaTexto} as texto`) as Promise<{ texto: string | null }[]>;
     }
 
@@ -2004,7 +2004,7 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
     ]);
 
     const textoAnuncios = filasAnuncios.map((f) => f.texto ?? '').join(' ');
-    const textoLiteratura = filasLiteratura.map((f) => htmlToPlainText(f.texto)).join(' ');
+    const textoLiteratura = filasLiteratura.map((f) => (f.texto ?? '')).join(' ');
 
     const tokensAnuncios = tokenize(textoAnuncios);
     const tokensLiteratura = tokenize(textoLiteratura);

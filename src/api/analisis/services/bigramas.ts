@@ -116,7 +116,7 @@ export async function construirIndice(
   corpus: TipoCorpus = 'literario'
 ): Promise<IndiceLexico> {
   const knex = strapiInstance.db.connection;
-  const columnaTexto = corpus === 'publicidad' ? 'a.texto_ocr_anuncios' : 'a.texto';
+  const columnaTexto = corpus === 'publicidad' ? 'a.texto_ocr_anuncios' : 'a.texto_plano';
 
   const indiceCorpus = new Map<string, Map<string, number>>();
   const indicePredecesores = new Map<string, Map<string, number>>();

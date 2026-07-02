@@ -176,7 +176,7 @@ export default {
       'a.id as article_id',
       'a.titulo as articulo_titulo',
       'a.slug as articulo_slug',
-      'a.texto as texto',
+      'a.texto_plano as texto',
       'i.numero_orden as numero_orden',
       'i.ano as anio',
       'p.titulo as revista_titulo',
@@ -227,7 +227,7 @@ export default {
     }[] = [];
 
     for (const row of articleRows) {
-      const plainText = htmlToPlainText(row.texto);
+      const plainText = row.texto ?? '';
       const normalizedText = stripDiacritics(plainText).toLowerCase();
       const normalizedTitulo = stripDiacritics(row.articulo_titulo ?? '').toLowerCase();
       const autoresNormalizados = (authorsByArticle.get(row.article_id) ?? []).map((nombre) =>
