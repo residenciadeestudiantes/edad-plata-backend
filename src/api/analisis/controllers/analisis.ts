@@ -1570,9 +1570,17 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
           'i.ano as anio'
         );
 
-    const porRevistaMap = new Map<string, { revista: string; slug: string; num_anuncios: number }>();
     const porAñoMap = new Map<number, number>();
     for (const fila of filas) {
+      if (fila.anio !== null) {
+        porAñoMap.set(fila.anio, (porAñoMap.get(fila.anio) ?? 0) + 1);
+      }
+    }
+
+    // por_revista respeta el filtro de año (pero no el de revista)
+    const filasParaRevista = año !== null ? filas.filter((f) => f.anio === año) : filas;
+    const porRevistaMap = new Map<string, { revista: string; slug: string; num_anuncios: number }>();
+    for (const fila of filasParaRevista) {
       const entry = porRevistaMap.get(fila.revista_slug) ?? {
         revista: fila.revista_titulo,
         slug: fila.revista_slug,
@@ -1580,10 +1588,6 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
       };
       entry.num_anuncios += 1;
       porRevistaMap.set(fila.revista_slug, entry);
-
-      if (fila.anio !== null) {
-        porAñoMap.set(fila.anio, (porAñoMap.get(fila.anio) ?? 0) + 1);
-      }
     }
 
     const filasFiltradas = filas.filter(
