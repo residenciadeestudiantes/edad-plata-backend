@@ -58,6 +58,26 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Normaliza la palabra buscada (sin tildes, minúsculas) y resuelve el token
+// efectivo en el índice: primero intenta coincidencia exacta; si no hay resultados,
+// devuelve el token más frecuente que empiece por la palabra (prefijo).
+function resolverToken(
+  palabra: string,
+  frecuencias: Map<string, number>
+): string {
+  const normalizada = stripDiacritics(palabra.trim().toLowerCase());
+  if ((frecuencias.get(normalizada) ?? 0) > 0) return normalizada;
+  let mejorToken = normalizada;
+  let mejorFreq = 0;
+  for (const [token, freq] of frecuencias) {
+    if (token.startsWith(normalizada) && freq > mejorFreq) {
+      mejorFreq = freq;
+      mejorToken = token;
+    }
+  }
+  return mejorToken;
+}
+
 // Convierte el HTML almacenado en `texto` a texto plano, conservando tildes y
 // mayúsculas, para poder buscar coincidencias y extraer contexto legible.
 function htmlToPlainText(html: string | null): string {
@@ -1240,8 +1260,6 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
     if (!palabraRaw || typeof palabraRaw !== 'string' || palabraRaw.trim().length === 0) {
       return ctx.badRequest('El parámetro "palabra" es obligatorio.');
     }
-    const palabra = palabraRaw.trim().toLowerCase();
-
     const autorSlug = typeof ctx.query.autorSlug === 'string' ? ctx.query.autorSlug.trim() : '';
     const reconstruir = ctx.query.reconstruir === 'true';
 
@@ -1260,6 +1278,8 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
       await construirIndice(strapi);
     }
     const indice = obtenerIndice()!;
+
+    const palabra = resolverToken(palabraRaw, indice.frecuenciasCorpus);
 
     const sucesoresCorpus = calcularProbabilidades(indice.indiceCorpus, indice.frecuenciasCorpus, palabra, 10);
     const predecesoresCorpus = calcularProbabilidades(
@@ -1855,13 +1875,14 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
     if (!palabraRaw || typeof palabraRaw !== 'string' || palabraRaw.trim().length === 0) {
       return ctx.badRequest('El parámetro "palabra" es obligatorio.');
     }
-    const palabra = palabraRaw.trim().toLowerCase();
     const reconstruir = ctx.query.reconstruir === 'true';
 
     if (reconstruir || !obtenerIndice('publicidad')) {
       await construirIndice(strapi, 'publicidad');
     }
     const indice = obtenerIndice('publicidad')!;
+
+    const palabra = resolverToken(palabraRaw, indice.frecuenciasCorpus);
 
     const sucesores = calcularProbabilidades(indice.indiceCorpus, indice.frecuenciasCorpus, palabra, 10);
     const predecesores = calcularProbabilidades(indice.indicePredecesores, indice.frecuenciasCorpus, palabra, 10);
@@ -1895,7 +1916,7 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
     const porRevistaMap = new Map<string, { revista: string; slug: string; frecuencia: number }>();
     for (const anuncio of anunciosRevista) {
       const tokens = tokenizarParaBigramas(limpiarHtml(anuncio.texto));
-      const cuenta = tokens.filter((t) => t === palabra).length;
+      const cuenta = tokens.filter((t) => t === palabra || t.startsWith(palabra)).length;
       if (cuenta === 0) continue;
       const entry = porRevistaMap.get(anuncio.revista_slug) ?? {
         revista: anuncio.revista_titulo,

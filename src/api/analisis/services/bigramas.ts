@@ -6,6 +6,10 @@
 
 import { STOPWORDS } from './stopwords';
 
+export function stripDiacritics(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
 export interface ProbabilidadToken {
   token: string;
   frecuencia: number;
@@ -68,7 +72,7 @@ export function limpiarHtml(html: string | null): string {
 // como un solo token; un guion suelto al principio o final de un token se
 // recorta). Filtra tokens de menos de 3 caracteres y stopwords.
 export function tokenizarParaBigramas(texto: string): string[] {
-  return texto
+  return stripDiacritics(texto)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/\s+/)
