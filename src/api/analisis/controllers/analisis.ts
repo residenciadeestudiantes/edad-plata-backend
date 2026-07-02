@@ -345,7 +345,7 @@ async function initCategoriasTable(knex: any) {
   _categoriasTableReady = true;
 }
 
-type CategoriaRow = { id: number; nombre: string; concepto: string; activa: boolean };
+type CategoriaRow = { id: number; nombre: string; concepto: string; activa: boolean; grupo: string };
 
 async function readCategorias(knex: any): Promise<CategoriaRow[]> {
   await initCategoriasTable(knex);
@@ -1608,7 +1608,7 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
   // del tiempo, usando similitud semántica (coseno sobre embeddings pgvector)
   // en lugar de coincidencia exacta de palabras clave.
   // El embedding de cada categoría se genera una vez y se cachea en memoria.
-  async publicidadTecnologia(ctx: Context) {
+  async publicidadTendencias(ctx: Context) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return ctx.internalServerError('OPENAI_API_KEY no configurada.');
 
@@ -1664,6 +1664,7 @@ Escribe en español, en 3-4 párrafos breves y en texto corrido (sin encabezados
 
         return {
           categoria: nombre,
+          grupo: (categorias.find((c) => c.nombre === nombre)?.grupo ?? ''),
           palabras_clave: [concepto],
           similitud_umbral: UMBRAL,
           serie: [...menciones.entries()]

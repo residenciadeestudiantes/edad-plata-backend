@@ -56,8 +56,8 @@ export default {
     },
     {
       method: 'GET',
-      path: '/analisis/publicidad/tecnologia',
-      handler: 'analisis.publicidadTecnologia',
+      path: '/analisis/publicidad/tendencias',
+      handler: 'analisis.publicidadTendencias',
       config: { auth: false },
     },
     {
