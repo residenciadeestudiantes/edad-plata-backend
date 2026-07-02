@@ -16,6 +16,7 @@ interface ArticleRow {
   articulo_titulo: string;
   articulo_slug: string;
   texto: string | null;
+  pies_imagen: string | null;
   numero_orden: number | null;
   anio: number | null;
   revista_titulo: string;
@@ -80,18 +81,31 @@ function construirFragmento(
   plainText: string,
   normalizedText: string,
   terminosPrioridad: { original: string; normalizado: string }[],
-  tituloOriginal: string
+  tituloOriginal: string,
+  piesText: string | null = null
 ): string {
   for (const termino of terminosPrioridad) {
     const index = normalizedText.indexOf(termino.normalizado);
-    if (index === -1) continue;
-
-    const start = Math.max(0, index - CONTEXT_CHARS);
-    const end = Math.min(plainText.length, index + termino.original.length + CONTEXT_CHARS);
-    const antes = collapseWhitespace(plainText.slice(start, index));
-    const coincidencia = plainText.slice(index, index + termino.original.length);
-    const despues = collapseWhitespace(plainText.slice(index + termino.original.length, end));
-    return `${antes} **${coincidencia}** ${despues}`.trim();
+    if (index !== -1) {
+      const start = Math.max(0, index - CONTEXT_CHARS);
+      const end = Math.min(plainText.length, index + termino.original.length + CONTEXT_CHARS);
+      const antes = collapseWhitespace(plainText.slice(start, index));
+      const coincidencia = plainText.slice(index, index + termino.original.length);
+      const despues = collapseWhitespace(plainText.slice(index + termino.original.length, end));
+      return `${antes} **${coincidencia}** ${despues}`.trim();
+    }
+    if (piesText) {
+      const normalizedPies = stripDiacritics(piesText).toLowerCase();
+      const piesIndex = normalizedPies.indexOf(termino.normalizado);
+      if (piesIndex !== -1) {
+        const start = Math.max(0, piesIndex - CONTEXT_CHARS);
+        const end = Math.min(piesText.length, piesIndex + termino.original.length + CONTEXT_CHARS);
+        const antes = collapseWhitespace(piesText.slice(start, piesIndex));
+        const coincidencia = piesText.slice(piesIndex, piesIndex + termino.original.length);
+        const despues = collapseWhitespace(piesText.slice(piesIndex + termino.original.length, end));
+        return `${antes} **${coincidencia}** ${despues}`.trim();
+      }
+    }
   }
 
   return tituloOriginal;
@@ -122,14 +136,14 @@ export default {
     const page = Math.max(1, Number(ctx.query.page) || 1);
     const pageSize = Math.max(1, Number(ctx.query.pageSize) || 20);
 
-    // Ámbito de la búsqueda: por defecto se busca en ambos (compatibilidad
-    // con peticiones que no envíen estos parámetros). Si se envía "false"
-    // explícitamente, ese ámbito se excluye.
+    // Ámbito de la búsqueda: por defecto título/autor y texto activos;
+    // pies de imagen desactivado por defecto para no romper peticiones antiguas.
     const buscarEnTituloAutor = ctx.query.enTituloAutor !== 'false';
     const buscarEnTexto = ctx.query.enTexto !== 'false';
+    const buscarEnPiesImagen = ctx.query.enPiesImagen === 'true';
 
-    if (!buscarEnTituloAutor && !buscarEnTexto) {
-      return ctx.badRequest('Selecciona al menos un ámbito de búsqueda (título/autor o texto).');
+    if (!buscarEnTituloAutor && !buscarEnTexto && !buscarEnPiesImagen) {
+      return ctx.badRequest('Selecciona al menos un ámbito de búsqueda.');
     }
 
     const revistaSlug = typeof ctx.query.revista === 'string' ? ctx.query.revista.trim() : '';
@@ -177,6 +191,7 @@ export default {
       'a.titulo as articulo_titulo',
       'a.slug as articulo_slug',
       'a.texto_plano as texto',
+      'a.pies_imagen as pies_imagen',
       'i.numero_orden as numero_orden',
       'i.ano as anio',
       'p.titulo as revista_titulo',
@@ -230,19 +245,19 @@ export default {
       const plainText = row.texto ?? '';
       const normalizedText = stripDiacritics(plainText).toLowerCase();
       const normalizedTitulo = stripDiacritics(row.articulo_titulo ?? '').toLowerCase();
+      const normalizedPies = stripDiacritics(row.pies_imagen ?? '').toLowerCase();
       const autoresNormalizados = (authorsByArticle.get(row.article_id) ?? []).map((nombre) =>
         stripDiacritics(nombre).toLowerCase()
       );
 
-      // El ámbito (título/autor, texto del artículo, o ambos) decide en qué
-      // campos se busca el término; ver checkboxes del formulario avanzado.
       const contieneTermino = (normalizado: string) => {
         const enTexto = buscarEnTexto && normalizedText.includes(normalizado);
         const enTituloOAutor =
           buscarEnTituloAutor &&
           (normalizedTitulo.includes(normalizado) ||
             autoresNormalizados.some((autor) => autor.includes(normalizado)));
-        return enTexto || enTituloOAutor;
+        const enPies = buscarEnPiesImagen && normalizedPies.includes(normalizado);
+        return enTexto || enTituloOAutor || enPies;
       };
 
       let coincide = contieneTermino(normalizada1);
@@ -255,11 +270,13 @@ export default {
 
       if (!coincide) continue;
 
+      const piesText = row.pies_imagen ?? '';
       const fragmento = construirFragmento(
         plainText,
         normalizedText,
         terminosPrioridad,
-        row.articulo_titulo
+        row.articulo_titulo,
+        buscarEnPiesImagen ? piesText : null
       );
 
       resultados.push({
