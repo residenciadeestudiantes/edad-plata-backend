@@ -80,6 +80,13 @@
     "idioma": {
       "type": "string"
     },
+    "mostrar_en_home": {
+      "type": "boolean",
+      "default": false
+    },
+    "orden_home": {
+      "type": "integer"
+    },
     "issues": {
       "type": "relation",
       "relation": "oneToMany",
