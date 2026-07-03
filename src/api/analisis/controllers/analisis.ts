@@ -566,12 +566,22 @@ export default {
       number,
       { año: number; ocurrencias: number; articuloIds: Set<number> }
     >();
+    // Total de palabras por año en TODO el ámbito de la búsqueda (todos los
+    // artículos del período, contengan o no el término), para la densidad
+    // relativa: se acumula para cada artículo del ámbito, independientemente
+    // de si más abajo se descarta por no contener el término.
+    const totalPalabrasPorAñoMap = new Map<number, number>();
     const concordancias: Concordancia[] = [];
 
     for (const row of articleRows) {
       const plainText = collapseHtmlButKeepOffsets(row.texto);
       const normalizedText = stripDiacritics(plainText).toLowerCase();
       const normalizedTitulo = stripDiacritics(row.articulo_titulo ?? '').toLowerCase();
+
+      if (row.anio !== null) {
+        const numPalabras = plainText.trim().length > 0 ? plainText.trim().split(/\s+/).length : 0;
+        totalPalabrasPorAñoMap.set(row.anio, (totalPalabrasPorAñoMap.get(row.anio) ?? 0) + numPalabras);
+      }
 
       const textMatches = [...normalizedText.matchAll(wordRegex)];
       const tituloMatches = [...normalizedTitulo.matchAll(wordRegex)];
@@ -678,11 +688,23 @@ export default {
 
     // Para el gráfico de línea temporal: mismos datos que porAño, pero en
     // orden cronológico y sin el desglose de artículos (no lo necesita Plotly).
+    // Incluye además la frecuencia relativa (densidad): ocurrencias por cada
+    // 10.000 palabras del total escrito ese año en el ámbito de la búsqueda,
+    // la métrica estándar en lingüística de corpus para comparar años con
+    // volúmenes de texto muy distintos (a diferencia de las ocurrencias
+    // absolutas, que dependen de cuánto se publicó ese año).
     const por_año = [...porAñoMap.values()]
-      .map((entry) => ({
-        año: entry.año,
-        ocurrencias: entry.ocurrencias,
-      }))
+      .map((entry) => {
+        const totalPalabras = totalPalabrasPorAñoMap.get(entry.año) ?? 0;
+        const densidad_10k =
+          totalPalabras > 0 ? Math.round((entry.ocurrencias / totalPalabras) * 10000 * 100) / 100 : 0;
+        return {
+          año: entry.año,
+          ocurrencias: entry.ocurrencias,
+          total_palabras: totalPalabras,
+          densidad_10k,
+        };
+      })
       .sort((a, b) => a.año - b.año);
 
     // Para el gráfico de burbujas: mismos datos que porAutor, con los nombres
