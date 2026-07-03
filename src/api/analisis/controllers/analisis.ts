@@ -1011,42 +1011,18 @@ export default {
       }
     };
 
-    // Corpus de referencia: todos los autores publicados con artículos del
-    // tipo seleccionado, para calcular la norma (centroide TF-IDF).
-    const filasReferencia: { autor_slug: string; texto: string | null }[] = await knex(
-      'articles_authors_lnk as aal'
-    )
-      .innerJoin('authors as au', 'au.id', 'aal.author_id')
-      .innerJoin('articles as a', 'a.id', 'aal.article_id')
-      .where('au.published_at', 'is not', null)
-      .andWhere('a.published_at', 'is not', null)
-      .whereIn('a.idioma', ['es', 'Español'])
-      .andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'))
-      .andWhere(filtroModo)
-      .select('au.slug as autor_slug', 'a.texto as texto');
-
-    const textosPorAutor = new Map<string, string[]>();
-    for (const fila of filasReferencia) {
-      const textos = textosPorAutor.get(fila.autor_slug) ?? [];
-      textos.push(fila.texto ?? '');
-      textosPorAutor.set(fila.autor_slug, textos);
-    }
-
-    const slugsReferencia: string[] = [];
-    const tokensReferencia: string[][] = [];
-    for (const [slug, textos] of textosPorAutor) {
-      const tokens = tokenize(textos.join(' '));
-      if (tokens.length === 0) continue;
-      slugsReferencia.push(slug);
-      tokensReferencia.push(tokens);
-    }
-
-    if (slugsReferencia.length === 0) {
-      return ctx.badRequest('No hay suficientes datos en el corpus para calcular la innovación estilística.');
-    }
-
-    // Artículos del mismo tipo por autor y año, para la trayectoria temporal.
-    const filasPorAnio: {
+    // Corpus completo a nivel autor-año (todos los autores publicados, no
+    // solo los solicitados): la norma (centroide, media, std) y las
+    // trayectorias se calculan sobre documentos de la MISMA granularidad —
+    // un año de un autor —, en vez de comparar documentos de carrera
+    // completa (norma) contra documentos de un año (trayectoria). Mezclar
+    // ambas escalas sesgaba el resultado de forma sistemática: un documento
+    // corto (1 año) es siempre más "raro" en TF-IDF frente a un centroide
+    // construido con documentos largos (toda la carrera), con independencia
+    // del estilo real del autor — por eso cualquier punto de cualquier
+    // trayectoria salía con z-score muy alto, incluso para autores cuyo
+    // estilo agregado era prácticamente idéntico a la norma.
+    const filas: {
       autor_slug: string;
       texto: string | null;
       anio: number | null;
@@ -1057,8 +1033,7 @@ export default {
       .innerJoin('articles as a', 'a.id', 'aal.article_id')
       .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
       .innerJoin('issues as i', 'i.id', 'ail.issue_id')
-      .whereIn('au.slug', slugsSolicitados)
-      .andWhere('au.published_at', 'is not', null)
+      .where('au.published_at', 'is not', null)
       .andWhere('a.published_at', 'is not', null)
       .andWhere('i.published_at', 'is not', null)
       .whereIn('a.idioma', ['es', 'Español'])
@@ -1072,18 +1047,21 @@ export default {
         'a.titulo as article_titulo',
       );
 
-    const aniosPorAutor = new Map<string, Map<number, string[]>>();
+    const textosPorAutorAnio = new Map<string, Map<number, string[]>>();
     const articulosPorAutorAnio = new Map<string, Map<number, { slug: string; titulo: string }[]>>();
     const totalArticulosPorAutor = new Map<string, number>();
-    for (const fila of filasPorAnio) {
+    let totalArticulosCorpus = 0;
+
+    for (const fila of filas) {
       totalArticulosPorAutor.set(fila.autor_slug, (totalArticulosPorAutor.get(fila.autor_slug) ?? 0) + 1);
+      totalArticulosCorpus += 1;
       if (fila.anio === null) continue;
 
-      const porAnio = aniosPorAutor.get(fila.autor_slug) ?? new Map<number, string[]>();
+      const porAnio = textosPorAutorAnio.get(fila.autor_slug) ?? new Map<number, string[]>();
       const textos = porAnio.get(fila.anio) ?? [];
       textos.push(fila.texto ?? '');
       porAnio.set(fila.anio, textos);
-      aniosPorAutor.set(fila.autor_slug, porAnio);
+      textosPorAutorAnio.set(fila.autor_slug, porAnio);
 
       const porAnioArts = articulosPorAutorAnio.get(fila.autor_slug) ?? new Map<number, { slug: string; titulo: string }[]>();
       const arts = porAnioArts.get(fila.anio) ?? [];
@@ -1092,51 +1070,53 @@ export default {
       articulosPorAutorAnio.set(fila.autor_slug, porAnioArts);
     }
 
-    const puntosTrayectoria: { autorSlug: string; anio: number }[] = [];
-    const tokensPuntos: string[][] = [];
-    for (const slug of slugsSolicitados) {
-      const porAnio = aniosPorAutor.get(slug) ?? new Map<number, string[]>();
+    // Un punto (documento) por cada año con texto de cada autor del corpus:
+    // esta es la población completa de referencia para la norma, y de ella
+    // salen también los puntos de trayectoria de los autores solicitados
+    // (son el mismo conjunto, no hace falta calcularlos aparte).
+    const puntosCorpus: { autorSlug: string; anio: number }[] = [];
+    const tokensCorpus: string[][] = [];
+    for (const [slug, porAnio] of textosPorAutorAnio) {
       for (const [anio, textos] of porAnio) {
         const tokens = tokenize(textos.join(' '));
         if (tokens.length === 0) continue;
-        puntosTrayectoria.push({ autorSlug: slug, anio });
-        tokensPuntos.push(tokens);
+        puntosCorpus.push({ autorSlug: slug, anio });
+        tokensCorpus.push(tokens);
       }
     }
 
-    const tokensByDoc = [...tokensReferencia, ...tokensPuntos];
-    const vocabulario = [...new Set(tokensByDoc.flat())];
-    const vectores = buildTfIdf(tokensByDoc, vocabulario);
+    if (puntosCorpus.length === 0) {
+      return ctx.badRequest('No hay suficientes datos en el corpus para calcular la innovación estilística.');
+    }
 
-    const vectoresAutoresReferencia = vectores.slice(0, slugsReferencia.length);
-    const vectoresPuntos = vectores.slice(slugsReferencia.length);
+    const vocabulario = [...new Set(tokensCorpus.flat())];
+    const vectores = buildTfIdf(tokensCorpus, vocabulario);
 
     const centroide: TfIdfVector = new Map();
     for (const palabra of vocabulario) {
-      const suma = vectoresAutoresReferencia.reduce((acc, v) => acc + (v.get(palabra) ?? 0), 0);
-      centroide.set(palabra, suma / vectoresAutoresReferencia.length);
+      const suma = vectores.reduce((acc, v) => acc + (v.get(palabra) ?? 0), 0);
+      centroide.set(palabra, suma / vectores.length);
     }
 
-    // Distribución real de distancias de los autores de referencia al centroide,
-    // para que el frontend pueda dibujar la zona de norma con datos estadísticos.
-    const distanciasReferencia = vectoresAutoresReferencia.map(
-      (v) => 1 - cosineSimilarity(v, centroide, vocabulario)
-    );
-    const mediaNorma =
-      distanciasReferencia.reduce((a, b) => a + b, 0) / distanciasReferencia.length;
+    // Distribución real de distancias de TODOS los puntos autor-año del
+    // corpus al centroide, para que el frontend pueda dibujar la zona de
+    // norma con datos estadísticos.
+    const distancias = vectores.map((v) => 1 - cosineSimilarity(v, centroide, vocabulario));
+    const mediaNorma = distancias.reduce((a, b) => a + b, 0) / distancias.length;
     const stdNorma = Math.sqrt(
-      distanciasReferencia.reduce((a, b) => a + (b - mediaNorma) ** 2, 0) /
-        distanciasReferencia.length
+      distancias.reduce((a, b) => a + (b - mediaNorma) ** 2, 0) / distancias.length
     );
 
+    const numAutoresReferencia = new Set(puntosCorpus.map((p) => p.autorSlug)).size;
+
     const norma = {
-      num_autores: slugsReferencia.length,
-      num_articulos: filasReferencia.length,
+      num_autores: numAutoresReferencia,
+      num_articulos: totalArticulosCorpus,
       media: mediaNorma,
       std: stdNorma,
       aviso_pocos_datos:
-        slugsReferencia.length < UMBRAL_POCOS_AUTORES_NORMA
-          ? `La norma se ha calculado con solo ${slugsReferencia.length} autores; los resultados pueden ser poco representativos.`
+        numAutoresReferencia < UMBRAL_POCOS_AUTORES_NORMA
+          ? `La norma se ha calculado con solo ${numAutoresReferencia} autores; los resultados pueden ser poco representativos.`
           : null,
     };
 
@@ -1144,15 +1124,15 @@ export default {
       const info = autoresInfoPorSlug.get(slug)!;
       const numArticulos = totalArticulosPorAutor.get(slug) ?? 0;
 
-      const trayectoria = puntosTrayectoria
-        .map((punto, i) => ({ punto, vector: vectoresPuntos[i] }))
+      const trayectoria = puntosCorpus
+        .map((punto, i) => ({ punto, vector: vectores[i] }))
         .filter(({ punto }) => punto.autorSlug === slug)
         .map(({ punto, vector }) => ({
           año: punto.anio,
           distancia: stdNorma > 0
             ? (1 - cosineSimilarity(vector, centroide, vocabulario) - mediaNorma) / stdNorma
             : 0,
-          num_articulos: aniosPorAutor.get(slug)?.get(punto.anio)?.length ?? 0,
+          num_articulos: textosPorAutorAnio.get(slug)?.get(punto.anio)?.length ?? 0,
           articulos: articulosPorAutorAnio.get(slug)?.get(punto.anio) ?? [],
         }))
         .sort((a, b) => a.año - b.año);
