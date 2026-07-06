@@ -193,7 +193,7 @@ async function main() {
 
     let slug = slugify(String(row.titulo));
     const data = {
-      titulo: row.titulo,
+      titulo: String(row.titulo),
       texto: row.texto,
       idioma: row.idioma,
       es_anuncio: esAnuncio,
