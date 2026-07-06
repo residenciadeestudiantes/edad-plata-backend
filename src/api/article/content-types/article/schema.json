@@ -41,6 +41,10 @@
       "type": "boolean",
       "default": false
     },
+    "es_obra_grafica": {
+      "type": "boolean",
+      "default": false
+    },
     "texto_ocr_anuncios": {
       "type": "text"
     },

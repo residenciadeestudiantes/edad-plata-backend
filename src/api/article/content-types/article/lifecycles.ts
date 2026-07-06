@@ -8,6 +8,7 @@ interface ArticleData {
   texto_plano?: string | null;
   pies_imagen?: string | null;
   es_poema?: boolean | null;
+  es_obra_grafica?: boolean | null;
 }
 
 function limpiarTexto(texto: string): string {
@@ -67,6 +68,21 @@ function esPoema(html: string): boolean {
   const normales = (limpio.match(/<div class="Normal[^"]*"/g) ?? []).length;
   const total = estrofas + normales;
   return total > 0 && estrofas / total >= 0.5;
+}
+
+// Obra gráfica (lámina, retrato, óleo...): el artículo son solo una o más
+// imágenes con su autor y título (bloques "imgbox" con AutorI/TituloI) y no
+// queda ningún bloque de texto real. Los anuncios también son "imgbox" sin
+// texto, pero describen la imagen con "DescrI" en vez de AutorI/TituloI, así
+// que su presencia descarta la clasificación.
+function esObraGrafica(html: string): boolean {
+  const limpio = html
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '')
+    .replace(/<div class="Normal">\s*<\/div>/g, '');
+  const tieneImgbox = /<div class="imgbox">/.test(limpio);
+  const tieneDescrI = /<div class="DescrI">/.test(limpio);
+  const tieneTextoReal = /<div class="(?:Normal|Estrofa|Cita)/.test(limpio);
+  return tieneImgbox && !tieneDescrI && !tieneTextoReal;
 }
 
 // Clases de contenido que no deben aparecer dentro de un <div class="imgbox">
@@ -182,6 +198,7 @@ function procesarTexto(data: ArticleData) {
     data.texto_plano = htmlAPlanoTexto(data.texto);
     data.pies_imagen = extraerPiesImagen(data.texto);
     data.es_poema = esPoema(data.texto);
+    data.es_obra_grafica = esObraGrafica(data.texto);
   }
 }
 

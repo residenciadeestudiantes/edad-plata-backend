@@ -82,6 +82,17 @@ function esPoema(html) {
   return total > 0 && estrofas / total >= 0.5;
 }
 
+function esObraGrafica(html) {
+  if (!html) return false;
+  const limpio = html
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '')
+    .replace(/<div class="Normal">\s*<\/div>/g, '');
+  const tieneImgbox = /<div class="imgbox">/.test(limpio);
+  const tieneDescrI = /<div class="DescrI">/.test(limpio);
+  const tieneTextoReal = /<div class="(?:Normal|Estrofa|Cita)/.test(limpio);
+  return tieneImgbox && !tieneDescrI && !tieneTextoReal;
+}
+
 function num(v) { const n = parseInt(String(v), 10); return isNaN(n) ? null : n; }
 function str(v) { const s = String(v ?? '').trim(); return s || null; }
 function bool(v) { return String(v).trim().toUpperCase() === 'TRUE'; }
@@ -196,6 +207,7 @@ async function run() {
     const textoPlano       = htmlATextoPlano(texto);
     const piesImagen       = extraerPiesImagen(texto || '');
     const es_poema         = esPoema(texto);
+    const es_obra_grafica  = esObraGrafica(texto);
     const idioma           = str(row.idioma) || 'Español';
     const es_anuncio       = bool(row.anuncio);
     const posicion         = num(row.posicion);
@@ -224,17 +236,17 @@ async function run() {
     const docId = genDocumentId();
     try {
       const campos = `document_id, titulo, slug, texto, texto_plano, texto_ocr_anuncios,
-                      pies_imagen, es_poema, idioma, es_anuncio, posicion, id_articulo_legado,
+                      pies_imagen, es_poema, es_obra_grafica, idioma, es_anuncio, posicion, id_articulo_legado,
                       created_at, updated_at, published_at`;
       const vals   = [
         docId, titulo, slug, texto, textoPlano, textoOcr,
-        piesImagen, es_poema, idioma, es_anuncio, posicion, id_articulo_legado,
+        piesImagen, es_poema, es_obra_grafica, idioma, es_anuncio, posicion, id_articulo_legado,
         now,
       ];
 
       // Draft
       const { rows: [draft] } = await db.query(
-        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,NULL) RETURNING id`,
+        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,NULL) RETURNING id`,
         vals
       );
       await db.query(
@@ -250,7 +262,7 @@ async function run() {
 
       // Published
       const { rows: [pub] } = await db.query(
-        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$13) RETURNING id`,
+        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$14) RETURNING id`,
         vals
       );
       await db.query(
