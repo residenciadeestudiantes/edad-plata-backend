@@ -97,6 +97,14 @@ async function main() {
   const workbook = XLSX.readFile(EXCEL_PATH);
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+  // xlsx puede leer id_numero_legado/id_articulo_legado como texto en filas
+  // sueltas si esa celda concreta tiene formato de texto en el Excel (aunque
+  // el resto de la columna sea numérica); se normalizan a number para que
+  // los Map por legado (issueByLegado, existingByLegado) casen siempre.
+  for (const row of rows) {
+    if (row.id_numero_legado != null) row.id_numero_legado = Number(row.id_numero_legado);
+    if (row.id_articulo_legado != null) row.id_articulo_legado = Number(row.id_articulo_legado);
+  }
   const validRows = rows.filter((row) => row.titulo && row.id_articulo_legado && row.id_numero_legado);
 
   const appContext = await compileStrapi();
