@@ -73,7 +73,13 @@ function htmlATextoPlano(html) {
 
 function esPoema(html) {
   if (!html) return false;
-  return /class="Estrofa"/.test(html);
+  const limpio = html
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '')
+    .replace(/<div class="Normal">\s*<\/div>/g, '');
+  const estrofas = (limpio.match(/<div class="Estrofa[^"]*"/g) ?? []).length;
+  const normales = (limpio.match(/<div class="Normal[^"]*"/g) ?? []).length;
+  const total = estrofas + normales;
+  return total > 0 && estrofas / total >= 0.5;
 }
 
 function num(v) { const n = parseInt(String(v), 10); return isNaN(n) ? null : n; }

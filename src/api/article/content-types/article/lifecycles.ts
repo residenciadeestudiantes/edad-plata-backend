@@ -54,8 +54,19 @@ function extraerPiesImagen(html: string): string {
   return partes.join('\n');
 }
 
+// Poema si al menos la mitad de los bloques de párrafo/verso son de tipo
+// Estrofa (proporción, no simple presencia): evita falsos positivos cuando
+// un artículo en prosa solo cita un fragmento de verso. Los divs "Normal"
+// que únicamente contienen el enlace de paginación no cuentan como bloque
+// de prosa real.
 function esPoema(html: string): boolean {
-  return /class="Estrofa"/.test(html);
+  const limpio = html
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '')
+    .replace(/<div class="Normal">\s*<\/div>/g, '');
+  const estrofas = (limpio.match(/<div class="Estrofa[^"]*"/g) ?? []).length;
+  const normales = (limpio.match(/<div class="Normal[^"]*"/g) ?? []).length;
+  const total = estrofas + normales;
+  return total > 0 && estrofas / total >= 0.5;
 }
 
 // Clases de contenido que no deben aparecer dentro de un <div class="imgbox">
