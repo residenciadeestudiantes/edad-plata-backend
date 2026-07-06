@@ -15,7 +15,7 @@ const client = new Client({
 });
 
 function esPoema(html) {
-  return /class="(?:Estrofa|TítuloP)"/.test(html);
+  return /class="Estrofa"/.test(html);
 }
 
 async function main() {

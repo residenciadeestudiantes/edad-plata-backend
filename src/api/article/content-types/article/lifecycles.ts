@@ -55,7 +55,7 @@ function extraerPiesImagen(html: string): string {
 }
 
 function esPoema(html: string): boolean {
-  return /class="(?:Estrofa|TítuloP)"/.test(html);
+  return /class="Estrofa"/.test(html);
 }
 
 // Clases de contenido que no deben aparecer dentro de un <div class="imgbox">

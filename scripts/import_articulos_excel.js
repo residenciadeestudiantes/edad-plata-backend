@@ -73,7 +73,7 @@ function htmlATextoPlano(html) {
 
 function esPoema(html) {
   if (!html) return false;
-  return /class="(?:Estrofa|TítuloP)"/.test(html);
+  return /class="Estrofa"/.test(html);
 }
 
 function num(v) { const n = parseInt(String(v), 10); return isNaN(n) ? null : n; }
