@@ -2056,6 +2056,58 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
       interpretacion: interpretarDistancia(distanciaCoseno),
     });
   },
+
+  // Validador manual de es_poema/es_obra_grafica: lista los artículos de una
+  // revista para revisar y corregir falsos positivos/negativos de ambos
+  // clasificadores automáticos.
+  async validadorArticulos(ctx: Context) {
+    const revista = String(ctx.query.revista ?? '').trim();
+    if (!revista) return ctx.badRequest('Se requiere el parámetro "revista" (slug de la publicación).');
+
+    const articulos = await strapi.documents('api::article.article').findMany({
+      status: 'published',
+      filters: { issue: { publication: { slug: { $eq: revista } } } },
+      fields: ['titulo', 'slug', 'es_poema', 'es_obra_grafica', 'posicion'],
+      populate: { issue: { fields: ['numero_orden'] } },
+    });
+
+    return ctx.send({
+      data: articulos.map((a) => ({
+        documentId: a.documentId,
+        titulo: a.titulo,
+        slug: a.slug,
+        es_poema: !!a.es_poema,
+        es_obra_grafica: !!a.es_obra_grafica,
+        numero_orden: a.issue?.numero_orden ?? null,
+        posicion: a.posicion ?? null,
+      })),
+    });
+  },
+
+  async validadorGuardar(ctx: Context) {
+    const body = ctx.request.body as {
+      cambios?: { documentId?: string; es_poema?: boolean; es_obra_grafica?: boolean }[];
+    };
+    if (!Array.isArray(body?.cambios) || body.cambios.length === 0) {
+      return ctx.badRequest('Se requiere un array "cambios".');
+    }
+
+    let actualizados = 0;
+    for (const cambio of body.cambios) {
+      if (!cambio.documentId) continue;
+      await strapi.documents('api::article.article').update({
+        documentId: cambio.documentId,
+        data: {
+          es_poema: !!cambio.es_poema,
+          es_obra_grafica: !!cambio.es_obra_grafica,
+        },
+        status: 'published',
+      });
+      actualizados++;
+    }
+
+    return ctx.send({ actualizados });
+  },
 };
 
 // Alias explícito para dejar claro en el código que el texto plano conserva

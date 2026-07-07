@@ -102,5 +102,17 @@ export default {
       handler: 'analisis.publicidadVanguardia',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/analisis/validador/articulos',
+      handler: 'analisis.validadorArticulos',
+      config: { auth: false },
+    },
+    {
+      method: 'POST',
+      path: '/analisis/validador/guardar',
+      handler: 'analisis.validadorGuardar',
+      config: { auth: false },
+    },
   ],
 };
