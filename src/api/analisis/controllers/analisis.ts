@@ -2095,12 +2095,16 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
     let actualizados = 0;
     for (const cambio of body.cambios) {
       if (!cambio.documentId) continue;
+      // `as any`: el tipo Input autogenerado de Strapi para este content-type
+      // no siempre refleja los campos añadidos más recientemente al schema
+      // (es_poema/es_obra_grafica) al compilar en un clon fresco, aunque sí
+      // existen en el modelo real.
       await strapi.documents('api::article.article').update({
         documentId: cambio.documentId,
         data: {
           es_poema: !!cambio.es_poema,
           es_obra_grafica: !!cambio.es_obra_grafica,
-        },
+        } as any,
         status: 'published',
       });
       actualizados++;
