@@ -76,6 +76,12 @@
       "relation": "manyToMany",
       "target": "api::author.author",
       "inversedBy": "articles"
+    },
+    "temas": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::tema.tema",
+      "inversedBy": "articles"
     }
   }
 }
