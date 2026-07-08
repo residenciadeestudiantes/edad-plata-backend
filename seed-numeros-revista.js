@@ -102,7 +102,7 @@ async function main() {
       data: {
         titulo: row.titulo,
         numero_orden: row.numero_orden,
-        mes: row.mes,
+        mes: row.mes >= 1 && row.mes <= 12 ? row.mes : null,
         año: row.año,
         url_facsimil: urlFacsimil,
         id_numero_legado: idNumeroLegado,
