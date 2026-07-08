@@ -7,6 +7,17 @@
 
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
+function stripAccents(str) {
+  return str.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function slugify(text) {
+  return stripAccents(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
 const TEMAS = [
   'Ciencias y tecnología',
   'Humanidades y filología',
@@ -38,7 +49,7 @@ async function main() {
     }
 
     await app.documents('api::tema.tema').create({
-      data: { nombre },
+      data: { nombre, slug: slugify(nombre) },
       status: 'published',
     });
     console.log(`Creado: ${nombre}`);
