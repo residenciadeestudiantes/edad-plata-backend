@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Clasifica artículos por tema (categoría temática) usando gpt-4o-mini.
 // Excluye artículos ya marcados como poema u obra gráfica (no son prosa de
-// contenido temático). Permite más de un tema cuando el artículo cruza
-// varios claramente; en general prefiere uno solo.
+// contenido temático). Pide una categoría principal (obligatoria) y una
+// secundaria (opcional, solo si aplica con fuerza) para evitar que el
+// modelo añada una segunda categoría "de propina" en casi todos los casos.
 //
 // Idempotente: salta los artículos que ya tienen algún tema asignado.
 //
@@ -24,15 +25,17 @@ const limite = limitArg ? parseInt(limitArg.split('=')[1], 10) : null;
 
 function llamarOpenAI(apiKey, temasNombres, titulo, textoPlano) {
   const textoRecortado = (textoPlano || '').slice(0, 12000);
-  const prompt = `Clasifica el siguiente artículo de una revista cultural española (1898-1936) en una o más de estas categorías temáticas:
+  const prompt = `Clasifica el siguiente artículo de una revista cultural española (1898-1936) en categorías temáticas de esta lista:
 
 ${temasNombres.map((n) => `- ${n}`).join('\n')}
 
 Instrucciones:
-- Devuelve solo las categorías que apliquen claramente. Lo habitual es UNA sola.
-- Usa más de una únicamente si el artículo cruza de verdad dos temas (p. ej. una biografía de un músico centrada en su muerte violenta puede ser a la vez "Música y artes escénicas" e "Historia"). No fuerces varias por rutina.
+- Asigna una categoría PRINCIPAL: la que mejor describe de qué trata el artículo en su conjunto.
+- Asigna una categoría SECUNDARIA solo si el artículo dedica una parte realmente sustancial a un segundo tema distinto e independiente del principal. En la inmensa mayoría de los casos no hace falta ninguna secundaria: usa null.
+- "Historia" NO es una categoría por defecto para todo lo antiguo. No la uses solo porque el texto sea de otra época, hable de una institución, cite una fecha o sea una biografía o necrológica. Resérvala para cuando el artículo analice o narre explícitamente hechos históricos, arqueológicos o políticos pasados como asunto central.
+- Del mismo modo, no añadas "Ciencias sociales y política" solo porque se mencione una figura pública, un país o una institución; resérvala para cuando el tema central sea explícitamente social o político.
 - Usa exactamente los nombres de la lista, tal cual están escritos.
-- Responde solo JSON con esta forma: {"temas": ["Categoría 1", "Categoría 2"]}
+- Responde solo JSON con esta forma exacta: {"principal": "Categoría", "secundaria": "Categoría" o null}
 
 Título: ${titulo}
 
@@ -68,7 +71,10 @@ ${textoRecortado}`;
             if (json.error) return reject(new Error(json.error.message));
             const contenido = json.choices[0].message.content;
             const parsed = JSON.parse(contenido);
-            resolve(Array.isArray(parsed.temas) ? parsed.temas : []);
+            const nombres = [parsed.principal, parsed.secundaria].filter(
+              (n) => typeof n === 'string' && n.trim()
+            );
+            resolve(nombres);
           } catch (e) {
             reject(e);
           }

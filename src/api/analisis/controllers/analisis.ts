@@ -2112,6 +2112,51 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
 
     return ctx.send({ actualizados });
   },
+
+  // Validador de temas dudosos: solo los artículos a los que la
+  // clasificación automática con LLM les asignó más de un tema (los casos
+  // en que el propio modelo detectó ambigüedad), para revisarlos a mano.
+  async validadorTemasArticulos(ctx: Context) {
+    const articulos = await strapi.documents('api::article.article').findMany({
+      status: 'published',
+      fields: ['titulo', 'slug'],
+      populate: { temas: { fields: ['nombre'] }, issue: { populate: { publication: { fields: ['titulo'] } } } },
+    });
+
+    const dudosos = articulos.filter((a) => (a.temas?.length ?? 0) > 1);
+
+    return ctx.send({
+      data: dudosos.map((a) => ({
+        documentId: a.documentId,
+        titulo: a.titulo,
+        slug: a.slug,
+        revista: a.issue?.publication?.titulo ?? null,
+        temas: (a.temas ?? []).map((t) => ({ documentId: t.documentId, nombre: t.nombre })),
+      })),
+    });
+  },
+
+  async validadorTemasGuardar(ctx: Context) {
+    const body = ctx.request.body as {
+      cambios?: { documentId?: string; temaIds?: string[] }[];
+    };
+    if (!Array.isArray(body?.cambios) || body.cambios.length === 0) {
+      return ctx.badRequest('Se requiere un array "cambios".');
+    }
+
+    let actualizados = 0;
+    for (const cambio of body.cambios) {
+      if (!cambio.documentId) continue;
+      await strapi.documents('api::article.article').update({
+        documentId: cambio.documentId,
+        data: { temas: cambio.temaIds ?? [] } as any,
+        status: 'published',
+      });
+      actualizados++;
+    }
+
+    return ctx.send({ actualizados });
+  },
 };
 
 // Alias explícito para dejar claro en el código que el texto plano conserva

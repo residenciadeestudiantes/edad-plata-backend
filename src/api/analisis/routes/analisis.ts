@@ -114,5 +114,17 @@ export default {
       handler: 'analisis.validadorGuardar',
       config: { auth: false },
     },
+    {
+      method: 'GET',
+      path: '/analisis/validador-temas/articulos',
+      handler: 'analisis.validadorTemasArticulos',
+      config: { auth: false },
+    },
+    {
+      method: 'POST',
+      path: '/analisis/validador-temas/guardar',
+      handler: 'analisis.validadorTemasGuardar',
+      config: { auth: false },
+    },
   ],
 };
