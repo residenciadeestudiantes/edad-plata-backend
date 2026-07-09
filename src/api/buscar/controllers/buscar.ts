@@ -186,6 +186,19 @@ export default {
       articlesQuery = articlesQuery.whereIn('a.id', authorArticleIds.length > 0 ? authorArticleIds : [-1]);
     }
 
+    const temasSlugsRaw = typeof ctx.query.temas === 'string' ? ctx.query.temas.trim() : '';
+    const temasSlugs = temasSlugsRaw ? temasSlugsRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+
+    if (temasSlugs.length > 0) {
+      const articulosConTema = await strapi.documents('api::article.article').findMany({
+        filters: { temas: { slug: { $in: temasSlugs } } },
+        fields: ['id'],
+        pagination: { limit: -1 },
+      });
+      const temaArticleIds = articulosConTema.map((a) => Number(a.id));
+      articlesQuery = articlesQuery.whereIn('a.id', temaArticleIds.length > 0 ? temaArticleIds : [-1]);
+    }
+
     const articleRows: ArticleRow[] = await articlesQuery.select(
       'a.id as article_id',
       'a.titulo as articulo_titulo',
@@ -449,6 +462,9 @@ export default {
     // 2. Búsqueda por similitud coseno en PostgreSQL
     const knex = strapi.db.connection;
 
+    const temasSlugsRaw = typeof ctx.query.temas === 'string' ? ctx.query.temas.trim() : '';
+    const temasSlugs = temasSlugsRaw ? temasSlugsRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+
     // Construimos la lista de IDs de artículos del autor si se filtra
     let authorArticleIds: number[] | null = null;
     if (autorSlug) {
@@ -457,6 +473,17 @@ export default {
         .where('au.slug', autorSlug)
         .andWhere('au.published_at', 'is not', null)
         .pluck('aal.article_id');
+    }
+
+    // Y la de artículos que tengan alguno de los temas seleccionados
+    let temaArticleIds: number[] | null = null;
+    if (temasSlugs.length > 0) {
+      const articulosConTema = await strapi.documents('api::article.article').findMany({
+        filters: { temas: { slug: { $in: temasSlugs } } },
+        fields: ['id'],
+        pagination: { limit: -1 },
+      });
+      temaArticleIds = articulosConTema.map((a) => Number(a.id));
     }
 
     // La búsqueda vectorial se hace con SQL raw para poder usar el operador <=>
@@ -496,6 +523,13 @@ export default {
       }
       sql += ` AND a.id = ANY(?)`;
       params.push(authorArticleIds);
+    }
+    if (temaArticleIds !== null) {
+      if (temaArticleIds.length === 0) {
+        return ctx.send({ data: [], meta: { total: 0, page, pageSize, pageCount: 0 } });
+      }
+      sql += ` AND a.id = ANY(?)`;
+      params.push(temaArticleIds);
     }
 
     // Pedimos más resultados de los necesarios para poder paginar en memoria
