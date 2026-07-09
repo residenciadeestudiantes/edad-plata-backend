@@ -3,12 +3,26 @@
 //    autores, descripciones de imagen, enlaces de paginación interna).
 // 2. Rellena `texto_plano` con el contenido de `texto` sin etiquetas HTML,
 //    para búsquedas de texto completo y embeddings vectoriales (pgvector).
+// 3. Al crear un artículo nuevo marcado como poema sin ningún tema asignado,
+//    lo clasifica automáticamente en "Literatura y creación" (documentId fijo
+//    en el CMS de producción): los poemas no pasan por el clasificador LLM de
+//    temas, así que sin esta regla quedarían siempre sin clasificar.
 interface ArticleData {
   texto?: string | null;
   texto_plano?: string | null;
   pies_imagen?: string | null;
   es_poema?: boolean | null;
   es_obra_grafica?: boolean | null;
+  temas?: unknown;
+}
+
+const TEMA_LITERATURA_CREACION_DOCUMENT_ID = 'i6lv2b3ern6qf4432696c0kw';
+
+function asignarTemaPoemaSinClasificar(data: ArticleData) {
+  const sinTemas = !data.temas || (Array.isArray(data.temas) && data.temas.length === 0);
+  if (data.es_poema && sinTemas) {
+    data.temas = [TEMA_LITERATURA_CREACION_DOCUMENT_ID];
+  }
 }
 
 function limpiarTexto(texto: string): string {
@@ -205,6 +219,7 @@ function procesarTexto(data: ArticleData) {
 export default {
   beforeCreate(event: { params: { data: ArticleData } }) {
     procesarTexto(event.params.data);
+    asignarTemaPoemaSinClasificar(event.params.data);
   },
   beforeUpdate(event: { params: { data: ArticleData } }) {
     procesarTexto(event.params.data);
