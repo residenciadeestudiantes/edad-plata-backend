@@ -18,11 +18,25 @@ interface ArticleData {
 
 const TEMA_LITERATURA_CREACION_DOCUMENT_ID = 'i6lv2b3ern6qf4432696c0kw';
 
-function asignarTemaPoemaSinClasificar(data: ArticleData) {
+function necesitaTemaPoemaSinClasificar(data: ArticleData): boolean {
   const sinTemas = !data.temas || (Array.isArray(data.temas) && data.temas.length === 0);
-  if (data.es_poema && sinTemas) {
-    data.temas = [TEMA_LITERATURA_CREACION_DOCUMENT_ID];
-  }
+  return Boolean(data.es_poema) && sinTemas;
+}
+
+// Asignar la relación `temas` directamente en `data` dentro de beforeCreate
+// no funciona: el Document Service ya ha resuelto/validado las relaciones
+// antes de que corra el lifecycle, así que un array de documentId añadido
+// aquí llega mal formado a la fase de "publish" y aborta la transacción
+// (se comprobó importando artículos reales: el primer artículo-poema de un
+// lote fallaba siempre con "current transaction is aborted"). Por eso se
+// aplica en afterCreate, como una actualización aparte —mismo patrón que
+// usa el guardado del validador de temas—, no como parte de la creación.
+async function asignarTemaPoemaSinClasificar(documentId: string) {
+  await strapi.documents('api::article.article').update({
+    documentId,
+    data: { temas: [TEMA_LITERATURA_CREACION_DOCUMENT_ID] } as any,
+    status: 'published',
+  });
 }
 
 function limpiarTexto(texto: string): string {
@@ -219,7 +233,14 @@ function procesarTexto(data: ArticleData) {
 export default {
   beforeCreate(event: { params: { data: ArticleData } }) {
     procesarTexto(event.params.data);
-    asignarTemaPoemaSinClasificar(event.params.data);
+  },
+  async afterCreate(event: {
+    params: { data: ArticleData };
+    result: { documentId: string };
+  }) {
+    if (necesitaTemaPoemaSinClasificar(event.params.data)) {
+      await asignarTemaPoemaSinClasificar(event.result.documentId);
+    }
   },
   beforeUpdate(event: { params: { data: ArticleData } }) {
     procesarTexto(event.params.data);
