@@ -38,6 +38,20 @@
     "id_autor_legado": {
       "type": "integer"
     },
+    "destacado_galeria": {
+      "type": "boolean",
+      "default": false
+    },
+    "orden_destacado_galeria": {
+      "type": "integer"
+    },
+    "es_gen27": {
+      "type": "boolean",
+      "default": false
+    },
+    "orden_gen27": {
+      "type": "integer"
+    },
     "articles": {
       "type": "relation",
       "relation": "manyToMany",
