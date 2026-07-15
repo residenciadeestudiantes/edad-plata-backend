@@ -1,0 +1,434 @@
+#!/usr/bin/env node
+// Importa artículos desde un CSV a PostgreSQL. Mismo esquema de columnas y
+// comportamiento que import_articulos_excel.js, pero leyendo CSV en vez de
+// .xlsx — necesario cuando algún artículo supera los 32767 caracteres por
+// celda que soporta el formato Excel (el HTML de `texto` se trunca/corrompe
+// al pasar por una hoja de cálculo).
+//
+// Columnas esperadas (cabecera obligatoria, orden libre):
+//   titulo, anuncio, id_numero_legado, texto, texto_ocr_anuncios,
+//   idioma, id_articulo_legado, posicion, id_autor_legado, imagenes
+//
+// Uso (desde dentro del contenedor backend):
+//   node /app/scripts/import_articulos_csv_legado.js --revista=<slug> /ruta/al/archivo.csv
+//
+// Comportamiento (idempotente):
+//   - Omite artículos cuyo id_articulo_legado ya existe en BD
+//   - Resuelve la issue via id_numero_legado → id en BD
+//   - Crea dos filas por artículo (draft + published)
+//   - Descarga y enlaza las imágenes de la columna "imagenes" (URLs separadas por " | ")
+
+'use strict';
+
+const { Client } = require('pg');
+const crypto     = require('crypto');
+const https      = require('https');
+const http       = require('http');
+const fs         = require('fs');
+const pathLib    = require('path');
+
+const UPLOADS_DIR = '/app/public/uploads';
+
+// ── Argumentos ────────────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+const revistaArg = args.find(a => a.startsWith('--revista='));
+if (!revistaArg) {
+  console.error('Uso: node import_articulos_csv_legado.js --revista=<slug> <archivo.csv>');
+  process.exit(1);
+}
+const revistaSlug = revistaArg.split('=')[1].trim();
+const csvPath = args.find(a => !a.startsWith('--'));
+if (!csvPath || !fs.existsSync(csvPath)) {
+  console.error(`Fichero CSV no encontrado: ${csvPath || '(no indicado)'}`);
+  process.exit(1);
+}
+
+// ── Parser CSV (RFC 4180) ─────────────────────────────────────────────────────
+
+function parseCSV(content) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false, i = 0;
+  const src = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  while (i < src.length) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"' && src[i + 1] === '"') { field += '"'; i += 2; continue; }
+      if (ch === '"') { inQuotes = false; i++; continue; }
+      field += ch;
+    } else {
+      if (ch === '"') { inQuotes = true; i++; continue; }
+      if (ch === ',') { row.push(field); field = ''; i++; continue; }
+      if (ch === '\n') {
+        row.push(field);
+        if (row.some(f => f.trim() !== '')) rows.push(row);
+        row = []; field = ''; i++; continue;
+      }
+      field += ch;
+    }
+    i++;
+  }
+  if (field !== '' || row.length) { row.push(field); if (row.some(f => f.trim() !== '')) rows.push(row); }
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(h => h.toLowerCase().trim());
+  return rows.slice(1).map(r => {
+    const obj = {};
+    headers.forEach((h, idx) => { obj[h] = r[idx] ?? ''; });
+    return obj;
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function genDocumentId() {
+  return crypto.randomBytes(18).toString('base64').toLowerCase()
+    .replace(/[^a-z0-9]/g, '').slice(0, 24).padEnd(24, '0');
+}
+
+function slugify(text) {
+  return text
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function htmlATextoPlano(html) {
+  if (!html) return null;
+  return html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/\s+/g, ' ')
+    .trim() || null;
+}
+
+function esPoema(html) {
+  if (!html) return false;
+  const limpio = html
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '')
+    .replace(/<div class="Normal">\s*<\/div>/g, '');
+  const estrofas = (limpio.match(/<div class="Estrofa[^"]*"/g) ?? []).length;
+  const normales = (limpio.match(/<div class="Normal[^"]*"/g) ?? []).length;
+  const total = estrofas + normales;
+  return total > 0 && estrofas / total >= 0.5;
+}
+
+function esObraGrafica(html) {
+  if (!html) return false;
+  const limpio = html
+    .replace(/<a class="page"[\s\S]*?<\/a>/g, '')
+    .replace(/<div class="Normal">\s*<\/div>/g, '');
+  const tieneImgbox = /<div class="imgbox">/.test(limpio);
+  const tieneDescrI = /<div class="DescrI">/.test(limpio);
+  const tieneTextoReal = /<div class="(?:Normal|Estrofa|Cita)/.test(limpio);
+  return tieneImgbox && !tieneDescrI && !tieneTextoReal;
+}
+
+function num(v) { const n = parseInt(String(v), 10); return isNaN(n) ? null : n; }
+function str(v) { const s = String(v ?? '').trim(); return s || null; }
+function bool(v) { return String(v).trim().toUpperCase() === 'TRUE'; }
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+const db = new Client({
+  host:     process.env.DATABASE_HOST     || 'postgres',
+  port:     parseInt(process.env.DATABASE_PORT || '5432'),
+  database: process.env.DATABASE_NAME     || 'strapi',
+  user:     process.env.DATABASE_USERNAME || 'strapi',
+  password: process.env.DATABASE_PASSWORD,
+});
+
+async function run() {
+  await db.connect();
+  console.log('Conectado a PostgreSQL.\n');
+
+  // Resolver publicación (draft + published)
+  const { rows: pubs } = await db.query(
+    `SELECT id, published_at FROM publications WHERE slug = $1 ORDER BY id`,
+    [revistaSlug]
+  );
+  if (pubs.length === 0) {
+    console.error(`No se encontró ninguna publicación con slug "${revistaSlug}".`);
+    await db.end(); process.exit(1);
+  }
+  const pubDraft     = pubs.find(p => !p.published_at);
+  const pubPublished = pubs.find(p =>  p.published_at);
+  if (!pubDraft || !pubPublished) {
+    console.error(`La publicación "${revistaSlug}" no tiene ambas filas (draft + published).`);
+    await db.end(); process.exit(1);
+  }
+
+  // Precargar mapa id_numero_legado → {draftIssueId, publishedIssueId}
+  const { rows: issueRows } = await db.query(`
+    SELECT i.id, i.id_numero_legado, i.published_at
+    FROM issues i
+    INNER JOIN issues_publication_lnk lnk ON lnk.issue_id = i.id
+    WHERE lnk.publication_id IN ($1, $2)
+    ORDER BY i.id_numero_legado, i.id
+  `, [pubDraft.id, pubPublished.id]);
+
+  const issueMap = new Map(); // id_numero_legado → { draftId, publishedId }
+  for (const r of issueRows) {
+    const key = r.id_numero_legado;
+    if (!issueMap.has(key)) issueMap.set(key, {});
+    const entry = issueMap.get(key);
+    if (!r.published_at) entry.draftId     = r.id;
+    else                  entry.publishedId = r.id;
+  }
+
+  // Precargar mapa id_autor_legado → {draftId, publishedId}
+  const { rows: authorRows } = await db.query(`
+    SELECT id, id_autor_legado, published_at
+    FROM authors
+    WHERE id_autor_legado IS NOT NULL
+    ORDER BY id_autor_legado, id
+  `);
+
+  const authorMap = new Map(); // id_autor_legado → { draftId, publishedId }
+  for (const r of authorRows) {
+    const key = r.id_autor_legado;
+    if (!authorMap.has(key)) authorMap.set(key, {});
+    const entry = authorMap.get(key);
+    if (!r.published_at) entry.draftId     = r.id;
+    else                  entry.publishedId = r.id;
+  }
+  console.log(`Autores con id_autor_legado: ${authorMap.size}`);
+
+  // Leer CSV
+  const rows = parseCSV(fs.readFileSync(csvPath, 'utf8'));
+
+  console.log(`Publicación: "${revistaSlug}" (draft=${pubDraft.id}, published=${pubPublished.id})`);
+  console.log(`Números cargados: ${issueMap.size} | Filas en CSV: ${rows.length}\n`);
+
+  let creados = 0, omitidos = 0, errores = 0;
+  const now = new Date().toISOString();
+
+  for (const row of rows) {
+    const titulo            = str(row.titulo);
+    const id_numero_legado  = num(row.id_numero_legado);
+    const id_articulo_legado = num(row.id_articulo_legado);
+
+    if (!titulo || !id_numero_legado) {
+      console.warn(`⚠  Fila omitida (falta titulo o id_numero_legado): ${JSON.stringify(row).slice(0, 200)}`);
+      errores++; continue;
+    }
+
+    const issue = issueMap.get(id_numero_legado);
+    if (!issue || !issue.draftId || !issue.publishedId) {
+      console.error(`✗ No existe número con id_numero_legado=${id_numero_legado} para "${revistaSlug}".`);
+      errores++; continue;
+    }
+
+    // Idempotencia
+    if (id_articulo_legado) {
+      const { rows: dup } = await db.query(
+        `SELECT id FROM articles WHERE id_articulo_legado = $1 LIMIT 1`,
+        [id_articulo_legado]
+      );
+      if (dup.length > 0) {
+        console.log(`  — omitido (ya existe): "${titulo}"`);
+        omitidos++; continue;
+      }
+    }
+
+    const texto            = str(row.texto);
+    const textoOcr         = str(row.texto_ocr_anuncios);
+    const textoPlano       = htmlATextoPlano(texto);
+    const piesImagen       = extraerPiesImagen(texto || '');
+    const es_poema         = esPoema(texto);
+    const es_obra_grafica  = esObraGrafica(texto);
+    const idioma           = str(row.idioma) || 'Español';
+    const es_anuncio       = bool(row.anuncio);
+    const posicion         = num(row.posicion);
+    const imagenesUrls     = str(row.imagenes)
+      ? str(row.imagenes).split('|').map(u => u.trim()).filter(Boolean)
+      : [];
+
+    // Resolver autores
+    const autorLegadoStr = str(row.id_autor_legado);
+    const autorIds = [];
+    if (autorLegadoStr) {
+      const legadoIds = autorLegadoStr.split('|').map(s => num(s.trim())).filter(Boolean);
+      for (const legId of legadoIds) {
+        const a = authorMap.get(legId);
+        if (a) autorIds.push(a);
+        else console.warn(`    ⚠ Autor id_autor_legado=${legId} no encontrado`);
+      }
+    }
+
+    let slug = slugify(titulo) || `articulo-${Date.now()}`;
+    const { rows: slugExist } = await db.query(
+      `SELECT id FROM articles WHERE slug = $1 LIMIT 1`, [slug]
+    );
+    if (slugExist.length > 0) slug = `${slug}-${Date.now()}`;
+
+    const docId = genDocumentId();
+    try {
+      const campos = `document_id, titulo, slug, texto, texto_plano, texto_ocr_anuncios,
+                      pies_imagen, es_poema, es_obra_grafica, idioma, es_anuncio, posicion, id_articulo_legado,
+                      created_at, updated_at, published_at`;
+      const vals   = [
+        docId, titulo, slug, texto, textoPlano, textoOcr,
+        piesImagen, es_poema, es_obra_grafica, idioma, es_anuncio, posicion, id_articulo_legado,
+        now,
+      ];
+
+      // Draft
+      const { rows: [draft] } = await db.query(
+        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,NULL) RETURNING id`,
+        vals
+      );
+      await db.query(
+        `INSERT INTO articles_issue_lnk (article_id, issue_id, article_ord) VALUES ($1,$2,$3)`,
+        [draft.id, issue.draftId, posicion]
+      );
+      for (let i = 0; i < autorIds.length; i++) {
+        await db.query(
+          `INSERT INTO articles_authors_lnk (article_id, author_id, author_ord) VALUES ($1,$2,$3)`,
+          [draft.id, autorIds[i].draftId, i + 1]
+        );
+      }
+
+      // Published
+      const { rows: [pub] } = await db.query(
+        `INSERT INTO articles (${campos}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$14) RETURNING id`,
+        vals
+      );
+      await db.query(
+        `INSERT INTO articles_issue_lnk (article_id, issue_id, article_ord) VALUES ($1,$2,$3)`,
+        [pub.id, issue.publishedId, posicion]
+      );
+      for (let i = 0; i < autorIds.length; i++) {
+        await db.query(
+          `INSERT INTO articles_authors_lnk (article_id, author_id, author_ord) VALUES ($1,$2,$3)`,
+          [pub.id, autorIds[i].publishedId, i + 1]
+        );
+      }
+
+      // Imágenes
+      for (let i = 0; i < imagenesUrls.length; i++) {
+        try {
+          process.stdout.write(`    ↓ Imagen ${i + 1}/${imagenesUrls.length}… `);
+          const fileId = await importarImagen(imagenesUrls[i], titulo);
+          await enlazarImagenArticulo(fileId, draft.id, i + 1);
+          await enlazarImagenArticulo(fileId, pub.id, i + 1);
+          console.log(`✓ file_id=${fileId}`);
+        } catch (imgErr) {
+          console.error(`\n    ✗ Error imagen ${i + 1}: ${imgErr.message}`);
+        }
+      }
+
+      console.log(`✓ n.º legado ${id_numero_legado} pos.${posicion ?? '?'} "${titulo}"`);
+      creados++;
+    } catch (err) {
+      console.error(`✗ Error en "${titulo}": ${err.message}`);
+      errores++;
+    }
+  }
+
+  console.log(`\nResultado: ${creados} creados · ${omitidos} omitidos · ${errores} errores.`);
+  await db.end();
+}
+
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http;
+    const file  = fs.createWriteStream(dest);
+    proto.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        file.close();
+        try { fs.unlinkSync(dest); } catch (_) {}
+        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        try { fs.unlinkSync(dest); } catch (_) {}
+        return reject(new Error(`HTTP ${res.statusCode} para ${url}`));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+    }).on('error', (err) => {
+      try { fs.unlinkSync(dest); } catch (_) {}
+      reject(err);
+    });
+  });
+}
+
+async function importarImagen(url, altText) {
+  const sharp   = require('sharp');
+  const ext     = pathLib.extname(new URL(url).pathname) || '.jpg';
+  const hash    = crypto.randomBytes(6).toString('hex');
+  const base    = `articulo_img_${hash}`;
+  const tmpPath = `/tmp/${base}${ext}`;
+  const mainName = `${base}${ext}`;
+  const mainPath = pathLib.join(UPLOADS_DIR, mainName);
+
+  await downloadFile(url, tmpPath);
+
+  const meta = await sharp(tmpPath).metadata();
+  const VARIANTES = [
+    { suffix: '_thumbnail', width: 156 },
+    { suffix: '_small',     width: 500 },
+    { suffix: '_medium',    width: 750 },
+    { suffix: '_large',     width: 1000 },
+  ];
+
+  const formats = {};
+  for (const v of VARIANTES) {
+    const outName = `${base}${v.suffix}${ext}`;
+    const buf = await sharp(tmpPath)
+      .resize({ width: v.width, withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    fs.writeFileSync(pathLib.join(UPLOADS_DIR, outName), buf);
+    const rm = await sharp(buf).metadata();
+    formats[v.suffix.slice(1)] = {
+      name: outName, hash: `${base}${v.suffix}`, ext,
+      mime: 'image/jpeg', width: rm.width, height: rm.height,
+      size: buf.length / 1024, url: `/uploads/${outName}`,
+    };
+  }
+
+  fs.copyFileSync(tmpPath, mainPath);
+  try { fs.unlinkSync(tmpPath); } catch (_) {}
+
+  const fileSize = fs.statSync(mainPath).size / 1024;
+
+  const { rows: [file] } = await db.query(
+    `INSERT INTO files
+       (name, alternative_text, caption, width, height, formats, hash, ext, mime, size, url, provider, created_at, updated_at)
+     VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,'local',NOW(),NOW())
+     RETURNING id`,
+    [mainName, altText || null, meta.width, meta.height, JSON.stringify(formats), base, ext, 'image/jpeg', fileSize, `/uploads/${mainName}`]
+  );
+  return file.id;
+}
+
+async function enlazarImagenArticulo(fileId, articleId, orden) {
+  await db.query(
+    `INSERT INTO files_related_mph (file_id, related_id, related_type, field, "order")
+     VALUES ($1,$2,'api::article.article','imagenes',$3)
+     ON CONFLICT DO NOTHING`,
+    [fileId, articleId, orden]
+  );
+}
+
+function extraerPiesImagen(html) {
+  const re = /<div class="(?:TituloI|NormalI)">([\s\S]*?)<\/div>/g;
+  const partes = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const t = m[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    if (t) partes.push(t);
+  }
+  return partes.join('\n') || null;
+}
+
+run().catch(err => { console.error(err); process.exit(1); });
