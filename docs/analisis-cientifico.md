@@ -7,7 +7,10 @@ cómo consumirlas desde la API.
 
 Todo el código vive en `src/api/analisis/` (controlador `analisis.ts` y
 servicio `bigramas.ts`) y, para la búsqueda de texto libre, en
-`src/api/buscar/`.
+`src/api/buscar/`. La clasificación previa de cada artículo (sección 6) es
+código aparte: `src/api/article/content-types/article/lifecycles.ts` (tipo
+de artículo, por reglas) y `scripts/clasificar_temas_llm.js` (tema, por
+LLM).
 
 ## 1. Estado del software: prototipo, no producto final
 
@@ -336,7 +339,76 @@ anuncios igual que los análisis (regla 2), pero **no** está restringido a
 artículos en español (regla 1): a diferencia de `/analisis/*`, el
 buscador admite encontrar coincidencias en cualquier idioma.
 
-## 6. Referencia rápida de endpoints
+## 6. Clasificación de artículos (tipo y tema)
+
+Antes de llegar a cualquiera de los análisis de la sección 4, cada artículo
+pasa por dos clasificaciones automáticas independientes, que no viven en
+`analisis.ts`/`bigramas.ts` sino en el lifecycle del content-type y en un
+script aparte. El resultado de ambas es lo que luego filtran las reglas
+comunes de la sección 2 (`es_poema`, `es_obra_grafica`, `temas`).
+
+### 6.1. Tipo de artículo (Poema / Obra gráfica / Prosa) — heurística por reglas
+
+Código: `src/api/article/content-types/article/lifecycles.ts`. Se ejecuta en
+`beforeCreate`/`beforeUpdate`, sobre el HTML del editor, sin LLM ni llamada
+externa — determinista y gratis.
+
+- **`esPoema`**: clasifica como poema si al menos la mitad de los bloques de
+  párrafo/verso son de tipo `Estrofa` (proporción `estrofas / (estrofas +
+  normales) >= 0.5`, no simple presencia), para no marcar como poema una
+  prosa que solo cita un fragmento de verso.
+- **`esObraGrafica`**: lámina, retrato u óleo — el artículo es solo uno o
+  más bloques `imgbox` con `AutorI`/`TituloI` y sin ningún bloque de texto
+  real (`Normal`/`Estrofa`/`Cita`). La presencia de `DescrI` descarta la
+  clasificación, porque así se distingue de un anuncio (también `imgbox`
+  sin texto, pero describe la imagen con `DescrI` en vez de `AutorI`/
+  `TituloI`).
+- Antes de clasificar, el HTML se pasa por `balancearDivs` (corrige `<div>`
+  desbalanceados del OCR: cierres sobrantes, `imgbox` sin cerrar, aperturas
+  sueltas) para que las dos heurísticas anteriores no fallen por marcado
+  roto.
+- **Corrección manual:** `/analisis/validador` (**Validador de tipo de
+  artículo**), por revista — corrige falsos positivos/negativos de ambos
+  clasificadores a mano, con checkboxes. Endpoints: `GET
+  /analisis/validador/articulos?revista=` y `POST
+  /analisis/validador/guardar` (`{ cambios: [{ documentId, es_poema,
+  es_obra_grafica }] }`).
+
+### 6.2. Tema/categoría del artículo — clasificador LLM
+
+Código: `scripts/clasificar_temas_llm.js`, script standalone (no lifecycle;
+se ejecuta a mano con `docker compose exec backend node
+scripts/clasificar_temas_llm.js`, con `--slugs=` o `--limit=` opcionales).
+
+- Modelo **gpt-4o-mini**, `temperature: 0`, `response_format: json_object`.
+  Recorta el texto a los primeros 12000 caracteres de `texto_plano`.
+- Excluye artículos ya marcados `es_poema` o `es_obra_grafica` (no son prosa
+  temática) — por eso `lifecycles.ts` asigna automáticamente el tema fijo
+  "Literatura y creación" (documentId `i6lv2b3ern6qf4432696c0kw`) a todo
+  poema nuevo sin temas: los poemas nunca pasan por este clasificador, así
+  que sin esa regla quedarían siempre sin clasificar.
+- Pide una categoría **principal** obligatoria y una **secundaria**
+  opcional (solo si el artículo dedica una parte realmente sustancial a un
+  segundo tema independiente); el prompt indica explícitamente no usar
+  "Historia" ni "Ciencias sociales y política" por defecto solo porque el
+  texto sea antiguo o mencione una institución o figura pública, para
+  reducir el sesgo del modelo hacia esas dos categorías.
+- **Idempotente:** sin `--slugs=`, salta los artículos que ya tienen algún
+  tema asignado.
+- **Corrección manual:** `/analisis/validador-temas` (**Validador de temas
+  dudosos**) — muestra solo los artículos a los que el LLM asignó *más de
+  un tema* (los casos en que el propio modelo detectó ambigüedad), con
+  checkboxes multi-selección para marcar/desmarcar temas. Endpoints: `GET
+  /analisis/validador-temas/articulos` y `POST
+  /analisis/validador-temas/guardar` (`{ cambios: [{ documentId, temaIds[]
+  }] }`).
+
+Ambas páginas de validación son herramientas internas: no están enlazadas
+en la navegación ni el subnav de Análisis (solo accesibles con la URL
+directa), protegidas igualmente por el `AnalisisGate` del layout de
+`/analisis` (contraseña "revistas").
+
+## 7. Referencia rápida de endpoints
 
 | Endpoint | Qué responde | Parámetro clave |
 |---|---|---|
@@ -352,13 +424,21 @@ buscador admite encontrar coincidencias en cualquier idioma.
 | `GET /analisis/publicidad/cadenas-lexicas` | Sucesores/predecesores + entropía (anuncios) | `palabra` |
 | `GET /analisis/publicidad/vanguardia` | Distancia TF-IDF anuncios vs. literatura | — |
 | `GET /buscar/texto` | Búsqueda booleana de texto literal | `q` |
+| `GET /analisis/validador/articulos` | Artículos de una revista para corregir tipo (poema/obra gráfica) | `revista` |
+| `POST /analisis/validador/guardar` | Guarda correcciones manuales de tipo | `cambios[]` |
+| `GET /analisis/validador-temas/articulos` | Artículos con más de un tema (ambigüedad del LLM) | — |
+| `POST /analisis/validador-temas/guardar` | Guarda correcciones manuales de temas | `cambios[]` |
 
-## 7. Limitaciones conocidas
+## 8. Limitaciones conocidas
 
-- **Estadística simple, no modelos de lenguaje.** Todo se basa en
-  frecuencias, TF-IDF y bigramas; no hay embeddings ni modelos
-  preentrenados. Es deliberado (interpretabilidad y reproducibilidad),
-  pero limita la sensibilidad a sinónimos, ironía, ambigüedad, etc.
+- **Estadística simple, no modelos de lenguaje — en los análisis (sección
+  4), no en la clasificación (sección 6).** Concordancias, morfológica,
+  estilométrico, innovación, nubes de palabras y cadenas léxicas se basan
+  en frecuencias, TF-IDF y bigramas; no hay embeddings ni modelos
+  preentrenados. Es deliberado (interpretabilidad y reproducibilidad), pero
+  limita la sensibilidad a sinónimos, ironía, ambigüedad, etc. La
+  clasificación por tema sí usa un LLM (gpt-4o-mini, sección 6.2), pero es
+  un paso previo de etiquetado, no uno de los análisis servidos por la API.
 - **Stemming, no lematización.** `PorterStemmerEs` reduce a una raíz
   heurística, no a la forma canónica de diccionario; puede agrupar o
   separar palabras de forma poco intuitiva en casos límite.
