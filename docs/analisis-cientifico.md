@@ -7,7 +7,9 @@ cómo consumirlas desde la API.
 
 Todo el código vive en `src/api/analisis/` (controlador `analisis.ts` y
 servicio `bigramas.ts`) y, para la búsqueda de texto libre, en
-`src/api/buscar/`.
+`src/api/buscar/`. Los procesos que generan las clasificaciones que estos
+análisis consumen (sección 5) son scripts aparte, en `scripts/` y en la
+raíz de `backend/`.
 
 ## 1. Estado del software: prototipo, no producto final
 
@@ -283,21 +285,30 @@ año.
 - **Salida:** `total_anuncios`, `total_anuncios_filtrados`, `palabras`,
   `por_revista` (recuento por revista), `por_año` (recuento por año).
 
-#### 4.8.2. Evolución tecnológica — `GET /analisis/publicidad/tecnologia`
+#### 4.8.2. Tendencias de producto en la publicidad — `GET /analisis/publicidad/tendencias`
 
-Penetración de tecnologías concretas en la publicidad a lo largo del
-tiempo, sobre 5 categorías curadas a mano (con sus listas de palabras
-clave, sin tildes, en `CATEGORIAS_TECNOLOGICAS`): Automóviles, Radio,
-Cinematógrafo, Teléfono, Electrodomésticos.
+Penetración de categorías de producto/servicio en la publicidad a lo largo
+del tiempo. **Ya no usa coincidencia de palabras clave** (el método
+original, con listas fijas como `CATEGORIAS_TECNOLOGICAS`, se sustituyó por
+clasificación semántica por embeddings — metodología completa en §5.3, que
+es exactamente la que usa este endpoint).
 
-- **Metodología:** para cada anuncio y categoría, se comprueba si el texto
-  contiene **al menos una** palabra clave de esa categoría (no cuenta
-  ocurrencias repetidas dentro del mismo anuncio, para no sobreponderar un
-  anuncio que repite la palabra varias veces); se cuenta 1 anuncio por
-  categoría y año si la menciona.
-- **Sin parámetros.** Devuelve las 5 series completas a la vez.
-- **Ampliar categorías:** añadir una entrada a `CATEGORIAS_TECNOLOGICAS`
-  en `analisis.ts` (categoría + lista de palabras clave sin diacríticos).
+- **Parámetros:** `publicacion` (opcional, slug; acota a los anuncios de
+  esa revista).
+- **Categorías:** viven en la tabla `publicidad_categorias` (no en código),
+  gestionables desde `/analisis/publicidad/categorias` (`GET`, listar),
+  `/descubrir-categorias` (`POST`, sugiere categorías nuevas con LLM a
+  partir de los títulos de anuncio del corpus), `/guardar-categorias`
+  (`POST`, inserta las aceptadas) y `/toggle-categoria` (`POST`, activa o
+  desactiva una sin borrarla — invalida su embedding cacheado). Semilla
+  inicial: 12 categorías (Automóviles, Radio, Cinematógrafo, Teléfono,
+  Electrodomésticos, Máquinas de escribir, Máquinas calculadoras,
+  Fotografía, Libros y editoriales, Hoteles y turismo, Farmacia y
+  laboratorios, Perfumería e higiene), pensada como punto de partida, no
+  como lista cerrada.
+- **Salida:** `total_anuncios` (con embedding disponible) y `categorias[]`
+  con `serie` (nº de anuncios por año que superan el umbral de similitud
+  con esa categoría).
 
 #### 4.8.3. Lenguaje publicitario — `GET /analisis/publicidad/cadenas-lexicas`
 
@@ -326,7 +337,131 @@ el corpus literario (no-anuncios) del mismo ámbito.
   frontend los mismos componentes de gráfico (`NubePalabrasComparativa`,
   gráfico de barras de palabras características) sin duplicar UI.
 
-## 5. Búsqueda de texto — `GET /buscar/texto`
+## 5. Clasificación automática de artículos
+
+A diferencia del resto del software (sección 4), que son análisis
+estadísticos *bajo demanda* sobre texto ya clasificado, esta sección
+describe los procesos que **generan** esa clasificación: qué campo
+rellenan, con qué método, sobre qué corpus y cómo se corrige a mano el
+resultado. Los tres corren como scripts batch (`backend/scripts/` o
+`backend/*.js`), no como parte del ciclo normal de petición/respuesta de
+la API — se ejecutan una vez por artículo (o por lote, tras una
+importación), y el resultado queda persistido en la base de datos.
+
+### 5.1. Clasificación estructural — `es_poema` / `es_obra_grafica`
+
+**Heurística sobre el marcado HTML**, no sobre el contenido semántico del
+texto. Los artículos importados conservan las clases CSS del documento de
+origen (ver `CLASES_HTML.md`); estos scripts cuentan divs de ciertas
+clases para inferir el tipo de contenido:
+
+- **`scripts/populate_es_poema.js`** (`esPoema()`): cuenta divs
+  `Estrofa*` frente a `Normal*` (tras descartar los saltos de página
+  `<a class="page">` y los `Normal` vacíos). Si al menos la mitad de los
+  bloques de texto son estrofas (`estrofas / total >= 0.5`), se marca
+  `es_poema = true`.
+- **`scripts/populate_es_obra_grafica.js`** (`esObraGrafica()`): se marca
+  `es_obra_grafica = true` si el artículo tiene al menos un div `imgbox`
+  (imagen) **y no** tiene ni `DescrI` (descripción/pie de obra) ni ningún
+  div de texto real (`Normal`, `Estrofa` o `Cita`) — es decir, es
+  contenido que consiste solo en imagen, sin prosa ni verso.
+- **Alcance:** todos los artículos publicados (`published_at IS NOT
+  NULL`); se ejecutan una vez sobre el histórico completo (backfill), no
+  de forma incremental por artículo nuevo.
+- **Por qué reglas y no un clasificador de texto:** la señal (estructura
+  del documento original) es más fiable que el contenido para este caso
+  concreto — un poema y su crítica pueden compartir vocabulario, pero no
+  la proporción de estrofas frente a párrafos.
+
+### 5.2. Clasificación temática — `temas` (`api::tema.tema`)
+
+**Clasificación por LLM** (no heurística ni por embeddings). Asigna a
+cada artículo una o dos categorías de un catálogo cerrado de 8 temas
+(`seed-temas.js`): Ciencias y tecnología, Humanidades y filología, Artes
+visuales y arquitectura, Ciencias sociales y política, Música y artes
+escénicas, Literatura y creación, Filosofía y pensamiento, Historia.
+
+- **Script:** `scripts/clasificar_temas_llm.js`. Modelo `gpt-4o-mini`,
+  `temperature: 0`, `response_format: json_object`. Prompt: título +
+  `texto_plano` (recortado a 12000 caracteres) + la lista de temas
+  disponibles.
+- **Categoría principal obligatoria, secundaria opcional.** El prompt
+  pide explícitamente evitar una secundaria "de propina": solo debe
+  aparecer si el artículo dedica una parte realmente sustancial a un
+  segundo tema independiente. También instruye no usar "Historia" ni
+  "Ciencias sociales y política" como cajón de sastre solo por la época,
+  una fecha o una figura pública mencionada — deben ser el asunto
+  central del artículo.
+- **Alcance:** excluye poemas y obras gráficas (`es_poema = false`,
+  `es_obra_grafica = false` — no son prosa de contenido temático).
+  Filtrable por `--slugs=` o `--limit=` para pruebas parciales.
+- **Idempotente:** al pasar por el corpus completo (sin `--slugs`), salta
+  cualquier artículo que ya tenga algún tema asignado — no reclasifica ni
+  gasta tokens de nuevo salvo que se le pidan slugs concretos.
+- **Salida no determinista:** aunque `temperature: 0` reduce la
+  variabilidad, sigue siendo un LLM — el mismo artículo podría recibir un
+  tema distinto en dos ejecuciones si el texto es ambiguo entre dos
+  categorías. Por eso existe la validación humana (§5.4).
+
+### 5.3. Clasificación semántica — categorías de producto en anuncios
+
+Comparte metodología con el endpoint de análisis `/analisis/publicidad/
+tendencias` (§4.8.2): es la misma clasificación, documentada aquí en
+detalle porque es el único caso del sistema que combina LLM (para
+generar categorías) *y* embeddings (para aplicarlas).
+
+- **Embeddings de anuncio:** cada artículo con `es_anuncio = true` tiene
+  un embedding (`text-embedding-3-small`, 1536 dims, columna pgvector
+  `embedding`) generado a partir de `texto_ocr_anuncios` (el texto OCR de
+  la imagen del anuncio, no de `texto_plano` — ver nota de la sesión 18
+  en `CONTEXTO.md`: en los anuncios ese campo está casi vacío).
+- **Embeddings de categoría:** cada categoría es una frase conceptual
+  corta (`concepto`, 8-15 palabras clave, p. ej. *"automóvil coche
+  vehículo de motor gasolina neumático carrocería..."*), no una lista de
+  keywords a buscar literalmente. Se embebe una vez y se cachea en
+  memoria por nombre de categoría (`_cacheCatEmbeddings`); el caché se
+  invalida al activar/desactivar una categoría o al reiniciar Strapi.
+- **Clasificación = similitud de coseno por categoría, no una etiqueta
+  única.** Para cada anuncio y cada categoría activa se calcula la
+  similitud coseno entre sus dos embeddings; si supera
+  `UMBRAL = 0.28`, ese anuncio "pertenece" a esa categoría **para esa
+  serie temporal concreta**. Un mismo anuncio puede superar el umbral en
+  varias categorías a la vez (multi-etiqueta, no una clasificación
+  mutuamente excluyente).
+- **Categorías generadas por LLM, no solo curadas a mano:**
+  `descubrirCategorias` (`POST /analisis/publicidad/descubrir-categorias`)
+  envía a `gpt-4o-mini` hasta 250 títulos de anuncio distintos del corpus
+  junto con las categorías ya existentes, y le pide entre 5 y 10
+  categorías nuevas no cubiertas todavía (nombre + concepto). Un humano
+  revisa las sugerencias y las acepta con `guardarCategorias`
+  (`POST /guardar-categorias`), que las inserta en `publicidad_categorias`
+  evitando duplicados por nombre. `toggleCategoria` permite desactivar una
+  categoría sin borrar su histórico.
+- **Por qué embeddings y no palabras clave:** el método anterior
+  (`CATEGORIAS_TECNOLOGICAS`, listas de keywords) fallaba con vocabulario
+  indirecto y variantes morfológicas (p. ej. "HUDSON, 7 plazas,
+  neumáticos cord" no se detectaba como automóvil sin la palabra literal
+  "automóvil"/"coche"). La similitud semántica generaliza mejor a partir
+  del concepto en vez de la coincidencia exacta de cadena.
+
+### 5.4. Validación humana de las clasificaciones automáticas
+
+Ninguna de las clasificaciones anteriores se trata como definitiva sin
+revisión: hay endpoints dedicados a corregirlas a mano.
+
+- **`GET /analisis/validador/articulos`** (parámetro `revista`) +
+  **`POST /analisis/validador/guardar`**: lista todos los artículos
+  publicados de una revista con sus valores actuales de `es_poema` /
+  `es_obra_grafica` para que un humano los corrija en bloque.
+- **`GET /analisis/validador-temas/articulos`** +
+  **`POST /analisis/validador-temas/guardar`**: **no** lista todos los
+  artículos clasificados, solo los "dudosos" — aquellos a los que el LLM
+  asignó **más de un** tema (`temas.length > 1`), es decir, los casos en
+  que el propio modelo detectó ambigüedad entre dos categorías. Es la
+  forma de acotar la revisión humana a los pocos casos donde de verdad
+  hace falta, en vez de revisar los ~2800 artículos uno a uno.
+
+## 6. Búsqueda de texto — `GET /buscar/texto`
 
 No es un análisis estadístico, pero comparte motor de texto con
 concordancias: búsqueda exacta de hasta 3 términos encadenados con
@@ -336,7 +471,7 @@ anuncios igual que los análisis (regla 2), pero **no** está restringido a
 artículos en español (regla 1): a diferencia de `/analisis/*`, el
 buscador admite encontrar coincidencias en cualquier idioma.
 
-## 6. Referencia rápida de endpoints
+## 7. Referencia rápida de endpoints
 
 | Endpoint | Qué responde | Parámetro clave |
 |---|---|---|
@@ -348,25 +483,46 @@ buscador admite encontrar coincidencias en cualquier idioma.
 | `GET /analisis/innovacion` | Deriva estilística de hasta 4 autores en el tiempo | `autores` |
 | `GET /analisis/cadenas-lexicas` | Sucesores/predecesores + entropía (literario) | `palabra` |
 | `GET /analisis/publicidad/frecuencia` | Frecuencias y distribución de anuncios | — |
-| `GET /analisis/publicidad/tecnologia` | Penetración de 5 categorías tecnológicas | — |
+| `GET /analisis/publicidad/tendencias` | Penetración de categorías de producto por embeddings | `publicacion` |
+| `GET /analisis/publicidad/categorias` | Lista las categorías de producto (activas e inactivas) | — |
+| `POST /analisis/publicidad/descubrir-categorias` | LLM sugiere categorías nuevas a partir de títulos | — |
+| `POST /analisis/publicidad/guardar-categorias` | Inserta las categorías sugeridas aceptadas | — |
+| `POST /analisis/publicidad/toggle-categoria` | Activa/desactiva una categoría | `id` |
 | `GET /analisis/publicidad/cadenas-lexicas` | Sucesores/predecesores + entropía (anuncios) | `palabra` |
 | `GET /analisis/publicidad/vanguardia` | Distancia TF-IDF anuncios vs. literatura | — |
+| `GET /analisis/validador/articulos` | Lista `es_poema`/`es_obra_grafica` de una revista para corregir | `revista` |
+| `POST /analisis/validador/guardar` | Guarda correcciones de `es_poema`/`es_obra_grafica` | — |
+| `GET /analisis/validador-temas/articulos` | Lista artículos con tema ambiguo (LLM asignó >1) | — |
+| `POST /analisis/validador-temas/guardar` | Guarda la corrección humana de temas | — |
 | `GET /buscar/texto` | Búsqueda booleana de texto literal | `q` |
 
-## 7. Limitaciones conocidas
+## 8. Limitaciones conocidas
 
-- **Estadística simple, no modelos de lenguaje.** Todo se basa en
-  frecuencias, TF-IDF y bigramas; no hay embeddings ni modelos
-  preentrenados. Es deliberado (interpretabilidad y reproducibilidad),
-  pero limita la sensibilidad a sinónimos, ironía, ambigüedad, etc.
+- **Estadística simple, no modelos de lenguaje — solo en los análisis de
+  la sección 4.** Concordancias, morfológica, estilométrico, nubes de
+  palabras, innovación y cadenas léxicas se basan en frecuencias, TF-IDF
+  y bigramas, sin embeddings ni modelos preentrenados (deliberado, por
+  interpretabilidad y reproducibilidad) — lo que limita su sensibilidad a
+  sinónimos, ironía, ambigüedad, etc. Esto **no** aplica a las
+  clasificaciones automáticas de la sección 5: la temática usa un LLM
+  (`gpt-4o-mini`) y la de categorías de producto usa embeddings
+  (`text-embedding-3-small`) precisamente para superar esa limitación en
+  esos dos casos.
 - **Stemming, no lematización.** `PorterStemmerEs` reduce a una raíz
   heurística, no a la forma canónica de diccionario; puede agrupar o
   separar palabras de forma poco intuitiva en casos límite.
 - **Sin desambiguación de sentido.** "Banco" (asiento/entidad financiera)
   se trata como una sola palabra.
-- **Categorías tecnológicas y stopwords curadas a mano**, no generadas ni
-  validadas estadísticamente — son un punto de partida razonable, no una
-  taxonomía cerrada.
+- **Clasificación por LLM, no determinista.** La clasificación temática
+  (§5.2) puede variar entre ejecuciones en artículos ambiguos aunque use
+  `temperature: 0`; se mitiga con la validación humana de casos
+  multi-tema (§5.4), no eliminando la variabilidad de raíz.
+- **Categorías de producto y stopwords sin validación estadística
+  formal.** Las categorías de publicidad ya no son enteramente manuales
+  (se pueden descubrir con LLM, §5.3), pero ni ellas ni las stopwords se
+  han validado con una métrica cuantitativa (precisión/recall sobre un
+  gold standard) — son un punto de partida razonable, no una taxonomía
+  cerrada ni verificada.
 - **Caché en memoria, sin invalidación automática.** Si se importan
   artículos nuevos, los endpoints de cadenas léxicas (literarias y de
   publicidad) seguirán devolviendo el índice antiguo hasta que se llame
