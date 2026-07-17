@@ -38,6 +38,24 @@
     "id_autor_legado": {
       "type": "integer"
     },
+    "anio_nacimiento": {
+      "type": "integer"
+    },
+    "anio_fallecimiento": {
+      "type": "integer"
+    },
+    "lugar_nacimiento": {
+      "type": "string"
+    },
+    "lugar_fallecimiento": {
+      "type": "string"
+    },
+    "actividades": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::actividad.actividad",
+      "inversedBy": "authors"
+    },
     "destacado_galeria": {
       "type": "boolean",
       "default": false

@@ -1,0 +1,32 @@
+{
+  "kind": "collectionType",
+  "collectionName": "actividades",
+  "info": {
+    "singularName": "actividad",
+    "pluralName": "actividades",
+    "displayName": "Actividad",
+    "description": "Tipo de actividad o profesión de un autor (poeta, pintor, ensayista...), normalizada para poder filtrar y buscar"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "nombre": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "nombre",
+      "required": true
+    },
+    "authors": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::author.author",
+      "mappedBy": "actividades"
+    }
+  }
+}
