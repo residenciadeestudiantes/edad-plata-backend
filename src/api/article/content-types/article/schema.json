@@ -82,6 +82,12 @@
       "relation": "manyToMany",
       "target": "api::tema.tema",
       "inversedBy": "articles"
+    },
+    "personas_mencionadas": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::persona-mencionada.persona-mencionada",
+      "inversedBy": "articles"
     }
   }
 }
