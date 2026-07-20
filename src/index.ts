@@ -26,12 +26,22 @@ async function sembrarPermisosAuthenticated(strapi: Core.Strapi) {
     (action) => `api::proyecto.proyecto.${action}`
   );
 
+  const analisisGuardadoController = strapi.controller('api::analisis-guardado.analisis-guardado');
+  const analisisGuardadoActions = Object.keys(analisisGuardadoController).map(
+    (action) => `api::analisis-guardado.analisis-guardado.${action}`
+  );
+
   const extraActions = [
     'api::cuenta.cuenta.actualizar',
     'api::cuenta.cuenta.eliminar',
   ];
 
-  for (const action of [...analisisActions, ...proyectoActions, ...extraActions]) {
+  for (const action of [
+    ...analisisActions,
+    ...proyectoActions,
+    ...analisisGuardadoActions,
+    ...extraActions,
+  ]) {
     const existing = await strapi
       .query('plugin::users-permissions.permission')
       .findOne({ where: { action, role: authenticatedRole.id } });

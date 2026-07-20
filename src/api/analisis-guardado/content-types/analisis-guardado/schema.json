@@ -1,0 +1,33 @@
+{
+  "kind": "collectionType",
+  "collectionName": "analisis_guardados",
+  "info": {
+    "singularName": "analisis-guardado",
+    "pluralName": "analisis-guardados",
+    "displayName": "AnalisisGuardado",
+    "description": "Búsqueda de análisis guardada por un usuario dentro de un Proyecto (parámetros, no el resultado calculado)"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "tipo": {
+      "type": "string",
+      "required": true
+    },
+    "parametros": {
+      "type": "json",
+      "required": true
+    },
+    "titulo": {
+      "type": "string",
+      "required": true
+    },
+    "proyecto": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::proyecto.proyecto"
+    }
+  }
+}

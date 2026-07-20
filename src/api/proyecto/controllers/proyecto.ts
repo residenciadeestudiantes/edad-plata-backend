@@ -46,6 +46,19 @@ export default {
   },
 
   async eliminar(ctx: Context) {
+    // Borra primero los análisis guardados del proyecto: son hijos
+    // exclusivos suyos (relación manyToOne), no entidades compartidas
+    // como los artículos, así que quedarían huérfanos si no se limpian
+    // antes de borrar el proyecto.
+    const analisis = await strapi.documents('api::analisis-guardado.analisis-guardado').findMany({
+      filters: { proyecto: { documentId: ctx.params.id } } as never,
+    });
+    for (const item of analisis) {
+      await strapi.documents('api::analisis-guardado.analisis-guardado').delete({
+        documentId: item.documentId,
+      });
+    }
+
     await strapi.documents('api::proyecto.proyecto').delete({ documentId: ctx.params.id });
     ctx.body = { ok: true };
   },
