@@ -202,11 +202,16 @@ function buildTfIdf(
 ): TfIdfVector[] {
   const N = tokensByDoc.length;
 
+  // Set por documento en vez de escanear el array con `includes` en cada
+  // palabra del vocabulario: evita un coste O(vocabulario × tokens_totales),
+  // dominante frente al resto del cálculo con corpus grandes.
+  const tokenSetsByDoc = tokensByDoc.map((tokens) => new Set(tokens));
+
   const documentFrequency = new Map<string, number>();
   for (const palabra of vocabulario) {
     let df = 0;
-    for (const tokens of tokensByDoc) {
-      if (tokens.includes(palabra)) df += 1;
+    for (const tokenSet of tokenSetsByDoc) {
+      if (tokenSet.has(palabra)) df += 1;
     }
     documentFrequency.set(palabra, df);
   }
@@ -348,6 +353,18 @@ const CATEGORIAS_INICIALES = [
 
 // Cache de embeddings de categorías (clave: nombre de categoría)
 const _cacheCatEmbeddings = new Map<string, number[]>();
+
+// Caché en memoria del corpus tokenizado para "Influencia de vanguardia":
+// evita repetir las consultas SQL (4 JOIN) y la tokenización en cada
+// petición idéntica. Prototipo en memoria (como bigramas.ts); clave =
+// combinación revista+número, invalidable con ?reconstruir=true o
+// reiniciando el servidor.
+const _cacheVanguardia = new Map<string, {
+  tokensAnuncios: string[];
+  tokensLiteratura: string[];
+  numArticulosAnuncios: number;
+  numArticulosLiteratura: number;
+}>();
 
 // Auto-crea la tabla publicidad_categorias y la puebla con CATEGORIAS_INICIALES si está vacía.
 let _categoriasTableReady = false;
@@ -1978,38 +1995,48 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
       }
     }
 
-    async function cargarCorpus(esAnuncio: boolean) {
-      let query = knex('articles as a')
-        .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
-        .innerJoin('issues as i', 'i.id', 'ail.issue_id')
-        .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
-        .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
-        .andWhere('a.published_at', 'is not', null)
-        .andWhere('i.published_at', 'is not', null)
-        .andWhere('p.published_at', 'is not', null)
-        .whereIn('a.idioma', ['es', 'Español']);
+    const reconstruir = ctx.query.reconstruir === 'true';
+    const claveCache = `${revistaSlug || '_'}::${numeroOrden ?? '_'}`;
 
-      query = esAnuncio
-        ? query.andWhere('a.es_anuncio', true)
-        : query.andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
+    let entrada = reconstruir ? undefined : _cacheVanguardia.get(claveCache);
+    if (!entrada) {
+      async function cargarCorpus(esAnuncio: boolean) {
+        let query = knex('articles as a')
+          .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+          .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+          .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+          .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+          .andWhere('a.published_at', 'is not', null)
+          .andWhere('i.published_at', 'is not', null)
+          .andWhere('p.published_at', 'is not', null)
+          .whereIn('a.idioma', ['es', 'Español']);
 
-      if (revistaSlug) query = query.andWhere('p.slug', revistaSlug);
-      if (numeroOrden !== null) query = query.andWhere('i.numero_orden', numeroOrden);
+        query = esAnuncio
+          ? query.andWhere('a.es_anuncio', true)
+          : query.andWhere((qb) => qb.where('a.es_anuncio', false).orWhereNull('a.es_anuncio'));
 
-      const columnaTexto = esAnuncio ? 'a.texto_ocr_anuncios' : 'a.texto_plano';
-      return query.select(`${columnaTexto} as texto`) as Promise<{ texto: string | null }[]>;
+        if (revistaSlug) query = query.andWhere('p.slug', revistaSlug);
+        if (numeroOrden !== null) query = query.andWhere('i.numero_orden', numeroOrden);
+
+        const columnaTexto = esAnuncio ? 'a.texto_ocr_anuncios' : 'a.texto_plano';
+        return query.select(`${columnaTexto} as texto`) as Promise<{ texto: string | null }[]>;
+      }
+
+      const [filasAnuncios, filasLiteratura] = await Promise.all([
+        cargarCorpus(true),
+        cargarCorpus(false),
+      ]);
+
+      entrada = {
+        tokensAnuncios: tokenize(filasAnuncios.map((f) => f.texto ?? '').join(' ')),
+        tokensLiteratura: tokenize(filasLiteratura.map((f) => f.texto ?? '').join(' ')),
+        numArticulosAnuncios: filasAnuncios.length,
+        numArticulosLiteratura: filasLiteratura.length,
+      };
+      _cacheVanguardia.set(claveCache, entrada);
     }
 
-    const [filasAnuncios, filasLiteratura] = await Promise.all([
-      cargarCorpus(true),
-      cargarCorpus(false),
-    ]);
-
-    const textoAnuncios = filasAnuncios.map((f) => f.texto ?? '').join(' ');
-    const textoLiteratura = filasLiteratura.map((f) => (f.texto ?? '')).join(' ');
-
-    const tokensAnuncios = tokenize(textoAnuncios);
-    const tokensLiteratura = tokenize(textoLiteratura);
+    const { tokensAnuncios, tokensLiteratura, numArticulosAnuncios, numArticulosLiteratura } = entrada;
 
     if (tokensAnuncios.length === 0) {
       return ctx.badRequest('No hay suficiente texto de anuncios para este ámbito.');
@@ -2041,8 +2068,8 @@ Responde ÚNICAMENTE con un array JSON válido, sin texto adicional, con este fo
       .map((entry) => ({ palabra: entry.palabra, peso: entry.pesoLiteratura }));
 
     return ctx.send({
-      anuncios: { num_articulos: filasAnuncios.length },
-      literatura: { num_articulos: filasLiteratura.length },
+      anuncios: { num_articulos: numArticulosAnuncios },
+      literatura: { num_articulos: numArticulosLiteratura },
       distancia_coseno: distanciaCoseno,
       similitud_coseno: similitudCoseno,
       palabras_caracteristicas: {
