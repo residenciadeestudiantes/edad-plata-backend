@@ -282,9 +282,13 @@ const TOP_PALABRAS_NUBE = 150;
 
 // Cuenta frecuencias de tokens ya tokenizados y devuelve las más frecuentes
 // en el formato {text, value} que espera react-d3-cloud en el frontend.
+// Excluye los tokens puramente numéricos (años, precios, números de
+// página...): no aportan valor visual en una nube de palabras y suelen
+// dominarla en corpus con mucha numeración (anuncios, pies de página).
 function contarFrecuencias(tokens: string[]): PalabraFrecuencia[] {
   const conteo = new Map<string, number>();
   for (const token of tokens) {
+    if (/^\p{N}+$/u.test(token)) continue;
     conteo.set(token, (conteo.get(token) ?? 0) + 1);
   }
   return [...conteo.entries()]
