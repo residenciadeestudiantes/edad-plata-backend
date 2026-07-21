@@ -1,0 +1,8 @@
+Fuente: https://github.com/michmech/lemmatization-lists (fichero lemmatization-es.txt)
+Autor: Michal Měchura
+Licencia: Open Data Commons Open Database License v1.0 (ODbL-1.0)
+https://opendatacommons.org/licenses/odbl/1-0/
+
+Formato: una pareja lema<TAB>forma por línea.
+Usado por backend/src/api/analisis/services/lemas.ts para la búsqueda con
+expansión morfológica de /analisis/corpus.

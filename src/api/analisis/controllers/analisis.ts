@@ -16,6 +16,7 @@ import {
   type ProbabilidadToken,
 } from '../services/bigramas';
 import { STOPWORDS } from '../services/stopwords';
+import { obtenerLema } from '../services/lemas';
 
 interface ArticleRow {
   article_id: number;
@@ -101,15 +102,22 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-// Para la búsqueda con expansión morfológica: reduce una palabra a su raíz
-// (stemming en español). Cubre conjugaciones verbales y variantes de número
-// (cantar/cantaba/cantando, libro/libros) porque comparten la misma raíz,
-// pero NO familias derivativas con sufijos distintos sobre bases distintas
-// (libre/libertad/liberación) — para eso haría falta un diccionario de
-// sinónimos. Es la misma limitación que tendría el diccionario "spanish" de
-// PostgreSQL, que internamente también usa stemming Snowball.
+// Para la búsqueda con expansión morfológica: reduce una palabra a su lema
+// (forma canónica) si está en el diccionario de lemas en español (ver
+// services/lemas.ts) — esto cubre correctamente casos que el stemming por
+// sí solo no resuelve (luz/luces, sociedad/sociedades). Si la palabra no
+// está en el diccionario (nombres propios, vocabulario de época, ruido de
+// OCR — habitual en un corpus histórico), se cae al stemming de
+// PorterStemmerEs como red de seguridad: cubre conjugaciones verbales y
+// variantes de número (cantar/cantaba/cantando) porque comparten la misma
+// raíz, pero NO familias derivativas con sufijos distintos sobre bases
+// distintas (libre/libertad/liberación) — para eso haría falta un
+// diccionario de sinónimos. Es la misma limitación que tendría el
+// diccionario "spanish" de PostgreSQL, que internamente también usa
+// stemming Snowball.
 function raizMorfologica(palabra: string): string {
-  return PorterStemmerEs.stem(palabra.toLowerCase());
+  const normalizada = palabra.toLowerCase();
+  return obtenerLema(normalizada) ?? PorterStemmerEs.stem(normalizada);
 }
 
 const WORD_REGEX_MORFOLOGICA = /[\p{L}\p{N}]+/gu;
