@@ -124,6 +124,12 @@ coverage
 excels
 
 ############################
+# Diccionarios fuente (PDFs, datos, no código)
+############################
+
+diccionarios
+
+############################
 # Python (solo para inspeccionar excels/, ver requirements.txt)
 ############################
 
