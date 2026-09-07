@@ -127,7 +127,12 @@ excels
 # Diccionarios fuente (PDFs, datos, no código)
 ############################
 
-diccionarios
+diccionarios/*
+# Excepción: el resultado final ya procesado (gazetteer) sí se versiona,
+# porque los scripts de producción lo necesitan para el entity linking.
+# (git no puede reincluir un archivo si el directorio padre está excluido
+# por completo, de ahí "diccionarios/*" en vez de "diccionarios".)
+!diccionarios/entradas_finales.json
 
 ############################
 # Python (solo para inspeccionar excels/, ver requirements.txt)
