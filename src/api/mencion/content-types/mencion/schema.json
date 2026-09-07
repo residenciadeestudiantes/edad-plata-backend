@@ -1,0 +1,51 @@
+{
+  "kind": "collectionType",
+  "collectionName": "menciones",
+  "info": {
+    "singularName": "mencion",
+    "pluralName": "menciones",
+    "displayName": "Mencion",
+    "description": "Una aparición concreta de una entidad (persona, lugar, institución u obra) en el texto de un artículo, con el método de enlace y la confianza con que se detectó, pendiente de revisión editorial"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "texto_mencion": {
+      "type": "string",
+      "required": true
+    },
+    "contexto": {
+      "type": "text"
+    },
+    "metodo": {
+      "type": "enumeration",
+      "enum": ["nombre_completo", "alias_seudonimo", "remision", "apellido_desambiguado", "legado"],
+      "required": true
+    },
+    "confianza": {
+      "type": "enumeration",
+      "enum": ["alta", "media", "baja"],
+      "required": true
+    },
+    "estado": {
+      "type": "enumeration",
+      "enum": ["pendiente", "confirmada", "descartada"],
+      "required": true,
+      "default": "pendiente"
+    },
+    "article": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::article.article",
+      "inversedBy": "menciones"
+    },
+    "entidad": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::entidad-mencionada.entidad-mencionada",
+      "inversedBy": "menciones"
+    }
+  }
+}

@@ -37,11 +37,6 @@ function decodeEntities(str) {
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)));
 }
 
-function terminaEnPunto(texto) {
-  const t = texto.trim();
-  return /[.?!»)]$/.test(t);
-}
-
 function main() {
   const xml = fs.readFileSync(XML_PATH, 'utf8');
   const lineas = xml.split('\n');
@@ -78,21 +73,26 @@ function main() {
 
     const enMargen = el.left <= MARGEN_IZQUIERDO_MAX;
     const primerElemento = i === 0;
-    const primeroDePagina = anterior && anterior.pagina !== el.pagina;
+    // Un salto de página solo cuenta como límite de entrada si lo último de
+    // la página anterior NO estaba en negrita: si lo estaba, es que un
+    // título de obra o una cabecera se partió justo por el salto de página
+    // (visto en "Unromantic " / "Spain." y en una fecha de cabecera cortada
+    // a mitad: "...BILBAO," / "1919)."), y esto es continuación, no entrada
+    // nueva.
+    const primeroDePagina = anterior && anterior.pagina !== el.pagina && !anterior.negrita;
     const saltoGrande =
-      anterior && !primeroDePagina && el.pagina === anterior.pagina && el.top - anterior.top >= SALTO_VERTICAL_MIN;
-    // Ojo: el elemento anterior puede ser un espaciador en blanco ("<text> </text>"),
-    // así que miramos el último texto no vacío acumulado en la entrada en curso, no
-    // el elemento crudo inmediatamente anterior.
-    const anteriorTerminaEntrada = actual
-      ? terminaEnPunto(actual.texto || actual.lema)
-      : true;
+      anterior && anterior.pagina === el.pagina && el.top - anterior.top >= SALTO_VERTICAL_MIN;
 
-    const esNuevaEntrada =
-      el.negrita &&
-      enMargen &&
-      anteriorTerminaEntrada &&
-      (primerElemento || primeroDePagina || saltoGrande);
+    // Nota: antes exigíamos también que la entrada anterior terminase en
+    // punto, para evitar confundir con un nuevo lema una frase en negrita
+    // (un título de obra) que por casualidad empezara pegada al margen. Pero
+    // algunas remisiones cortas ("Ver: X") no llevan punto final en el
+    // original (confirmado en el XML), así que esa comprobación bloqueaba
+    // la detección real y fusionaba la remisión con la entrada siguiente.
+    // El salto vertical de párrafo (dentro de la misma página) ya es de por
+    // sí una señal fiable para ese caso: una negrita a mitad de frase que
+    // envuelve línea no tiene ese salto.
+    const esNuevaEntrada = el.negrita && enMargen && (primerElemento || primeroDePagina || saltoGrande);
 
     if (esNuevaEntrada) {
       if (actual) entradas.push(actual);

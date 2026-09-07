@@ -1,0 +1,55 @@
+{
+  "kind": "collectionType",
+  "collectionName": "entidades_mencionadas",
+  "info": {
+    "singularName": "entidad-mencionada",
+    "pluralName": "entidades-mencionadas",
+    "displayName": "EntidadMencionada",
+    "description": "Persona, lugar, institución u obra mencionada en artículos, extraída del diccionario de vanguardias y enlazada automáticamente al texto de los artículos"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "nombre": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "nombre",
+      "required": true
+    },
+    "tipo": {
+      "type": "enumeration",
+      "enum": ["persona", "lugar", "institucion", "obra"],
+      "required": true
+    },
+    "lema_diccionario": {
+      "type": "string"
+    },
+    "descripcion": {
+      "type": "text"
+    },
+    "lugar_inicio": {
+      "type": "string"
+    },
+    "anio_inicio": {
+      "type": "integer"
+    },
+    "lugar_fin": {
+      "type": "string"
+    },
+    "anio_fin": {
+      "type": "integer"
+    },
+    "menciones": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::mencion.mencion",
+      "mappedBy": "entidad"
+    }
+  }
+}

@@ -121,8 +121,21 @@ function main() {
     const remMatch = /^Ver:\s*(.+?)\.?\s*$/i.exec(e.texto);
     const esRemision = !!remMatch;
 
-    const seudMatch = /^(?:Otro\s+)?[Ss]eudónimo\s+de\s+(.+?)\.?\s*$/i.exec(e.texto);
-    const esSeudonimo = !!seudMatch;
+    // Ojo: no basta con un ".+?" perezoso anclado a "$" — cuando el patrón
+    // aparece al principio de un texto largo, esa combinación captura TODA
+    // la biografía hasta el último punto del texto, no solo el nombre.
+    // Cortamos en el primer paréntesis (si lo hay, ahí empiezan lugar/año)
+    // o si no en el primer punto.
+    const seudPrefijo = /^(?:Otro\s+)?[Ss]eudónimo\s+de\s+/.exec(e.texto);
+    const esSeudonimo = !!seudPrefijo;
+    let nombreReal;
+    if (esSeudonimo) {
+      const resto = e.texto.slice(seudPrefijo[0].length);
+      const idxParen = resto.indexOf('(');
+      const idxPunto = resto.indexOf('.');
+      const corte = idxParen !== -1 && (idxPunto === -1 || idxParen < idxPunto) ? idxParen : idxPunto;
+      nombreReal = (corte === -1 ? resto : resto.slice(0, corte)).trim();
+    }
 
     const { nombre, parentesisRaw, multiplesEntidades } = extraerNombreYParentesis(e.lema);
     const parentesisInfo = parentesisRaw !== null ? parsearParentesis(parentesisRaw) : null;
@@ -140,7 +153,7 @@ function main() {
       es_remision: esRemision || undefined,
       remite_a: esRemision ? remMatch[1].trim() : undefined,
       es_seudonimo: esSeudonimo || undefined,
-      nombre_real: esSeudonimo ? seudMatch[1].trim() : undefined,
+      nombre_real: esSeudonimo ? nombreReal : undefined,
       tipo_inferido: tipo,
     };
   });

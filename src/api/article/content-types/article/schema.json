@@ -88,6 +88,12 @@
       "relation": "manyToMany",
       "target": "api::persona-mencionada.persona-mencionada",
       "inversedBy": "articles"
+    },
+    "menciones": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::mencion.mencion",
+      "mappedBy": "article"
     }
   }
 }
