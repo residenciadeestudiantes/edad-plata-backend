@@ -67,6 +67,16 @@ async function main() {
   if (LIMIT) personas = personas.slice(0, LIMIT);
   console.log(`Personas a migrar: ${personas.length}`);
 
+  // Conectar por id numérico, no por documentId: para un puñado de
+  // artículos conectar por documentId lanza "Invalid relations" (mismo
+  // bug ya documentado en importar_personas_mencionadas.js), aunque el
+  // artículo existe y está publicado.
+  const todosLosArticulos = await app.documents('api::article.article').findMany({
+    status: 'published',
+    fields: ['slug'],
+  });
+  const articuloIdPorSlug = new Map(todosLosArticulos.map((a) => [a.slug, a.id]));
+
   const entidadesExistentes = await app.documents('api::entidad-mencionada.entidad-mencionada').findMany({
     status: 'published',
     fields: ['nombre'],
@@ -105,6 +115,13 @@ async function main() {
     }
 
     for (const art of articulos) {
+      const articuloId = articuloIdPorSlug.get(art.slug);
+      if (!articuloId) {
+        errores++;
+        console.error(`  ✗ Artículo no encontrado por slug: ${art.slug}`);
+        continue;
+      }
+
       if (APPLY) {
         const yaExiste = await app.documents('api::mencion.mencion').findMany({
           filters: { article: { slug: { $eq: art.slug } }, entidad: { documentId: { $eq: entidad.documentId } } },
@@ -123,7 +140,7 @@ async function main() {
               metodo: 'legado',
               confianza: 'media',
               estado: 'confirmada',
-              article: art.documentId,
+              article: articuloId,
               entidad: entidad.documentId,
             },
           });
