@@ -176,7 +176,7 @@ function llamarOpenAI(apiKey, textoArticulo) {
     messages: [
       { role: 'user', content: `${PROMPT}\n\nArtículo:\n${(textoArticulo || '').slice(0, 8000)}` },
     ],
-    max_tokens: 1000,
+    max_tokens: 2000,
     temperature: 0,
     response_format: { type: 'json_object' },
   });
