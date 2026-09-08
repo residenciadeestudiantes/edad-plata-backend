@@ -190,7 +190,11 @@ export default {
     const temasSlugs = temasSlugsRaw ? temasSlugsRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
 
     if (temasSlugs.length > 0) {
+      // status: 'published' es imprescindible: sin él, documents().findMany()
+      // devuelve el id numérico de la fila draft (no el de la fila publicada
+      // que usa la consulta SQL de más abajo), y el whereIn no encuentra nada.
       const articulosConTema = await strapi.documents('api::article.article').findMany({
+        status: 'published',
         filters: { temas: { slug: { $in: temasSlugs } } },
         fields: ['id'],
         pagination: { limit: -1 },
@@ -478,7 +482,10 @@ export default {
     // Y la de artículos que tengan alguno de los temas seleccionados
     let temaArticleIds: number[] | null = null;
     if (temasSlugs.length > 0) {
+      // status: 'published', ver comentario equivalente en /buscar/texto más
+      // arriba en este mismo archivo.
       const articulosConTema = await strapi.documents('api::article.article').findMany({
+        status: 'published',
         filters: { temas: { slug: { $in: temasSlugs } } },
         fields: ['id'],
         pagination: { limit: -1 },
