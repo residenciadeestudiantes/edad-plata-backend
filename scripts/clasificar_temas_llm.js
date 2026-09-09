@@ -34,7 +34,7 @@ Instrucciones:
 - Asigna una categoría SECUNDARIA solo si el artículo dedica una parte realmente sustancial a un segundo tema distinto e independiente del principal. En la inmensa mayoría de los casos no hace falta ninguna secundaria: usa null.
 - "Historia" NO es una categoría por defecto para todo lo antiguo. No la uses solo porque el texto sea de otra época, hable de una institución, cite una fecha o sea una biografía o necrológica. Resérvala para cuando el artículo analice o narre explícitamente hechos históricos, arqueológicos o políticos pasados como asunto central.
 - Del mismo modo, no añadas "Ciencias sociales y política" solo porque se mencione una figura pública, un país o una institución; resérvala para cuando el tema central sea explícitamente social o político.
-- Usa exactamente los nombres de la lista, tal cual están escritos.
+- Usa exactamente los nombres de la lista, tal cual están escritos en español — incluso si el artículo está en otro idioma (portugués, francés, inglés...), nunca traduzcas el nombre de la categoría.
 - Responde solo JSON con esta forma exacta: {"principal": "Categoría", "secundaria": "Categoría" o null}
 
 Título: ${titulo}
