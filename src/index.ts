@@ -1,8 +1,9 @@
 import type { Core } from '@strapi/strapi';
 
 // Acciones que deben quedar accesibles para cualquier usuario con rol
-// Authenticated: todo el controller de análisis (antes público) y las
-// acciones de cuenta propia (actualizar/eliminar) de src/api/cuenta.
+// Authenticated: todo el controller de análisis (antes público), el
+// asistente conversacional (src/api/asistente) y las acciones de cuenta
+// propia (actualizar/eliminar) de src/api/cuenta.
 // Se derivan de los propios controllers en vez de mantener listas a mano.
 async function sembrarPermisosAuthenticated(strapi: Core.Strapi) {
   const authenticatedRole = await strapi
@@ -31,6 +32,11 @@ async function sembrarPermisosAuthenticated(strapi: Core.Strapi) {
     (action) => `api::analisis-guardado.analisis-guardado.${action}`
   );
 
+  const asistenteController = strapi.controller('api::asistente.asistente');
+  const asistenteActions = Object.keys(asistenteController).map(
+    (action) => `api::asistente.asistente.${action}`
+  );
+
   const extraActions = [
     'api::cuenta.cuenta.actualizar',
     'api::cuenta.cuenta.eliminar',
@@ -40,6 +46,7 @@ async function sembrarPermisosAuthenticated(strapi: Core.Strapi) {
     ...analisisActions,
     ...proyectoActions,
     ...analisisGuardadoActions,
+    ...asistenteActions,
     ...extraActions,
   ]) {
     const existing = await strapi
