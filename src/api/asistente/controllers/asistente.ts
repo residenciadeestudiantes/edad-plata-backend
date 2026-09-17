@@ -169,45 +169,65 @@ interface AutorContexto {
   anioFallecimiento: number | null;
 }
 
-interface AutorConRevistas extends AutorContexto {
-  revistas: { titulo: string; slug: string }[];
+interface ArticuloDeAutor {
+  titulo: string;
+  slug: string;
+  anio: number | null;
+  revista: string;
 }
+
+interface AutorConArticulos extends AutorContexto {
+  revistas: string[];
+  articulos: ArticuloDeAutor[];
+}
+
+const MAX_ARTICULOS_POR_AUTOR = 40;
 
 // Consulta directa autor → artículos → número → revista (mismo patrón de
 // join que el bloque de autores en buscarArticulos, pero a la inversa),
 // para las pocas coincidencias de autor de esta pregunta. Responde con
 // datos reales y completos a preguntas como "¿en qué revistas escribió
-// X?", que la búsqueda semántica de artículos solo contesta de forma
-// parcial e indirecta (mezcla artículos escritos por X con artículos
-// sobre X, y está limitada a los TOP_ARTICULOS más parecidos a la
-// pregunta, no a todo lo que X publicó).
-async function revistasPorAutor(
+// X?" o "¿qué artículos escribió X en 1925?", que la búsqueda semántica
+// de artículos solo contesta de forma parcial e indirecta (mezcla
+// artículos escritos por X con artículos sobre X, está limitada a los
+// TOP_ARTICULOS más parecidos a la pregunta —no a todo lo que X
+// publicó— y no tiene ninguna noción de "año" ni de "autoría").
+async function articulosPorAutor(
   knex: any,
   nombres: string[]
-): Promise<Map<string, { titulo: string; slug: string }[]>> {
-  const mapa = new Map<string, { titulo: string; slug: string }[]>();
+): Promise<Map<string, ArticuloDeAutor[]>> {
+  const mapa = new Map<string, ArticuloDeAutor[]>();
   if (nombres.length === 0) return mapa;
 
-  const filas: { autor_nombre: string; revista_titulo: string; revista_slug: string }[] = await knex(
-    'articles_authors_lnk as aal'
-  )
-    .innerJoin('authors as au', 'au.id', 'aal.author_id')
-    .innerJoin('articles as a', 'a.id', 'aal.article_id')
-    .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
-    .innerJoin('issues as i', 'i.id', 'ail.issue_id')
-    .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
-    .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
-    .whereIn('au.nombre', nombres)
-    .andWhere('au.published_at', 'is not', null)
-    .andWhere('a.published_at', 'is not', null)
-    .andWhere('p.published_at', 'is not', null)
-    .distinct('au.nombre as autor_nombre', 'p.titulo as revista_titulo', 'p.slug as revista_slug');
+  const filas: { autor_nombre: string; articulo_titulo: string; articulo_slug: string; anio: number | null; revista_titulo: string }[] =
+    await knex('articles_authors_lnk as aal')
+      .innerJoin('authors as au', 'au.id', 'aal.author_id')
+      .innerJoin('articles as a', 'a.id', 'aal.article_id')
+      .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+      .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+      .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+      .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+      .whereIn('au.nombre', nombres)
+      .andWhere('au.published_at', 'is not', null)
+      .andWhere('a.published_at', 'is not', null)
+      .andWhere('p.published_at', 'is not', null)
+      .orderBy('i.ano', 'asc')
+      .select(
+        'au.nombre as autor_nombre',
+        'a.titulo as articulo_titulo',
+        'a.slug as articulo_slug',
+        'i.ano as anio',
+        'p.titulo as revista_titulo'
+      );
 
   for (const fila of filas) {
     const lista = mapa.get(fila.autor_nombre) ?? [];
-    if (!lista.some((r) => r.slug === fila.revista_slug)) {
-      lista.push({ titulo: fila.revista_titulo, slug: fila.revista_slug });
-    }
+    lista.push({
+      titulo: fila.articulo_titulo,
+      slug: fila.articulo_slug,
+      anio: fila.anio ? Number(fila.anio) : null,
+      revista: fila.revista_titulo,
+    });
     mapa.set(fila.autor_nombre, lista);
   }
   return mapa;
@@ -240,13 +260,17 @@ async function cargarAutores(): Promise<AutorContexto[]> {
   return autoresCache;
 }
 
-async function buscarAutores(pregunta: string, knex: any): Promise<AutorConRevistas[]> {
+async function buscarAutores(pregunta: string, knex: any): Promise<AutorConArticulos[]> {
   const catalogo = await cargarAutores();
   const coincidencias = mejoresCoincidencias(pregunta, catalogo, (a) => a.nombre, TOP_AUTORES, autoresFrecuencias!);
   if (coincidencias.length === 0) return [];
 
-  const revistasPorNombre = await revistasPorAutor(knex, coincidencias.map((a) => a.nombre));
-  return coincidencias.map((a) => ({ ...a, revistas: revistasPorNombre.get(a.nombre) ?? [] }));
+  const articulosPorNombre = await articulosPorAutor(knex, coincidencias.map((a) => a.nombre));
+  return coincidencias.map((a) => {
+    const articulos = articulosPorNombre.get(a.nombre) ?? [];
+    const revistas = [...new Set(articulos.map((art) => art.revista))];
+    return { ...a, revistas, articulos };
+  });
 }
 
 interface EntidadContexto {
@@ -362,9 +386,16 @@ export default {
         fuentes.push({ id, tipo: 'autor', titulo: a.nombre, link: `/autores/${a.slug}`, fragmento: a.biografia });
         const fechas =
           a.anioNacimiento || a.anioFallecimiento ? ` (${a.anioNacimiento ?? '?'}-${a.anioFallecimiento ?? '?'})` : '';
-        const revistasAutor =
-          a.revistas.length > 0 ? `. Publicó en estas revistas del corpus: ${a.revistas.map((r) => r.titulo).join(', ')}` : '';
-        bloques.push(`[${id}] ${a.nombre}${fechas}${revistasAutor}${a.biografia ? '\n' + a.biografia : ''}`);
+        const revistasAutor = a.revistas.length > 0 ? `. Publicó en estas revistas del corpus: ${a.revistas.join(', ')}` : '';
+        const articulosMostrados = a.articulos.slice(0, MAX_ARTICULOS_POR_AUTOR);
+        const restantes = a.articulos.length - articulosMostrados.length;
+        const listaArticulos =
+          articulosMostrados.length > 0
+            ? `\nArtículos del corpus firmados por ${a.nombre} (título — revista, año):\n` +
+              articulosMostrados.map((art) => `- "${art.titulo}" — ${art.revista}, ${art.anio ?? 'año desconocido'}`).join('\n') +
+              (restantes > 0 ? `\n… y ${restantes} artículo(s) más.` : '')
+            : '';
+        bloques.push(`[${id}] ${a.nombre}${fechas}${revistasAutor}${a.biografia ? '\n' + a.biografia : ''}${listaArticulos}`);
       });
     }
 
