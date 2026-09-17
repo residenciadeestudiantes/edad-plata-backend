@@ -423,9 +423,11 @@ export default {
     // reintroducir el ruido que ya costó corregir dos veces (ver commits
     // anteriores). Si NINGUNA fuente por nombre encontró nada, se busca
     // aparte por distancia de edición y, si hay candidatos razonables, se
-    // le pide al modelo que pregunte "¿Te refieres a...?" en vez de
-    // asumirlos como buenos o descartarlos sin más — decisión del usuario,
-    // no del sistema.
+    // responde directamente "¿Te refieres a...?" SIN pasar por el modelo:
+    // probado que una nota de contexto pidiéndoselo al modelo no se seguía
+    // de forma fiable (seguía respondiendo solo que no tenía información),
+    // así que para esta decisión puramente mecánica es más fiable —y más
+    // barato— construir la respuesta de forma determinista.
     if (revistas.length === 0 && autores.length === 0 && entidades.length === 0 && diccionario.length === 0) {
       const [autoresCat, entidadesCat, revistasCat] = await Promise.all([
         cargarAutores(),
@@ -440,9 +442,15 @@ export default {
       ];
 
       if (nombresSugeridos.length > 0) {
-        bloques.push(
-          `\nPOSIBLE ERRATA: no se ha encontrado en el corpus ningún autor, entidad, revista o entrada del diccionario con un nombre exactamente igual al de la pregunta, pero estos nombres del catálogo son muy parecidos y podrían ser lo que el usuario quiso escribir: ${nombresSugeridos.join(', ')}. Si crees que se trata de una errata de tecleo, pregunta explícitamente algo como "¿Te refieres a X?" citando el nombre o los nombres más probables, en vez de responder solo que no tienes información.`
-        );
+        const unicos = [...new Set(nombresSugeridos)];
+        const lista =
+          unicos.length === 1
+            ? `«${unicos[0]}»`
+            : `${unicos.slice(0, -1).map((n) => `«${n}»`).join(', ')} o «${unicos[unicos.length - 1]}»`;
+        return ctx.send({
+          respuesta: `No he encontrado ese nombre exacto en el corpus. ¿Te refieres a ${lista}? Pregúntamelo de nuevo con ese nombre y te respondo.`,
+          fuentes: [],
+        });
       }
     }
 
