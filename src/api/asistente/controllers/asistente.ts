@@ -425,8 +425,7 @@ export default {
 INSTRUCCIONES ESTRICTAS:
 - Responde ÚNICAMENTE con la información del CONTEXTO proporcionado a continuación. No uses conocimiento general ni inventes datos, fechas o atribuciones que no estén en el contexto.
 - Cuando uses un dato del contexto, cita su identificador entre corchetes, por ejemplo: "García Lorca colaboró con la Residencia de Estudiantes [AU1]."
-- Si el contexto no contiene información suficiente para responder, dilo explícitamente: "No tengo información suficiente en el corpus para responder a esto." No lo compenses con conocimiento externo.
-- Si la pregunta pide un dato muy concreto (p. ej. un año exacto) que no aparece en el contexto, pero sí hay datos relacionados del mismo tema (p. ej. el mismo autor con artículos de otros años), no te limites a decir que no tienes información: dilo explícitamente y, a continuación, ofrece esos datos relacionados que sí tienes disponibles.
+- Usa la frase "No tengo información suficiente en el corpus para responder a esto." ÚNICAMENTE cuando el contexto no contenga NADA relacionado con la pregunta. No la uses como respuesta por defecto cuando falte un detalle concreto (un año, una cifra) pero sí haya en el contexto datos relacionados sobre el mismo autor, revista o tema: en ese caso, indica primero que ese dato exacto no aparece y, a continuación, ofrece los datos relacionados que sí tienes (p. ej. si preguntan por artículos de un autor en un año que no está, pero el contexto trae sus artículos de otros años, responde con esos años y aclara que ese año en concreto no consta). No inventes ni compenses con conocimiento externo en ningún caso.
 - Responde en español, en un tono claro y accesible, sin tecnicismos innecesarios.
 
 CONTEXTO:
