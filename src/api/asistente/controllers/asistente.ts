@@ -169,6 +169,50 @@ interface AutorContexto {
   anioFallecimiento: number | null;
 }
 
+interface AutorConRevistas extends AutorContexto {
+  revistas: { titulo: string; slug: string }[];
+}
+
+// Consulta directa autor → artículos → número → revista (mismo patrón de
+// join que el bloque de autores en buscarArticulos, pero a la inversa),
+// para las pocas coincidencias de autor de esta pregunta. Responde con
+// datos reales y completos a preguntas como "¿en qué revistas escribió
+// X?", que la búsqueda semántica de artículos solo contesta de forma
+// parcial e indirecta (mezcla artículos escritos por X con artículos
+// sobre X, y está limitada a los TOP_ARTICULOS más parecidos a la
+// pregunta, no a todo lo que X publicó).
+async function revistasPorAutor(
+  knex: any,
+  nombres: string[]
+): Promise<Map<string, { titulo: string; slug: string }[]>> {
+  const mapa = new Map<string, { titulo: string; slug: string }[]>();
+  if (nombres.length === 0) return mapa;
+
+  const filas: { autor_nombre: string; revista_titulo: string; revista_slug: string }[] = await knex(
+    'articles_authors_lnk as aal'
+  )
+    .innerJoin('authors as au', 'au.id', 'aal.author_id')
+    .innerJoin('articles as a', 'a.id', 'aal.article_id')
+    .innerJoin('articles_issue_lnk as ail', 'ail.article_id', 'a.id')
+    .innerJoin('issues as i', 'i.id', 'ail.issue_id')
+    .innerJoin('issues_publication_lnk as ipl', 'ipl.issue_id', 'i.id')
+    .innerJoin('publications as p', 'p.id', 'ipl.publication_id')
+    .whereIn('au.nombre', nombres)
+    .andWhere('au.published_at', 'is not', null)
+    .andWhere('a.published_at', 'is not', null)
+    .andWhere('p.published_at', 'is not', null)
+    .distinct('au.nombre as autor_nombre', 'p.titulo as revista_titulo', 'p.slug as revista_slug');
+
+  for (const fila of filas) {
+    const lista = mapa.get(fila.autor_nombre) ?? [];
+    if (!lista.some((r) => r.slug === fila.revista_slug)) {
+      lista.push({ titulo: fila.revista_titulo, slug: fila.revista_slug });
+    }
+    mapa.set(fila.autor_nombre, lista);
+  }
+  return mapa;
+}
+
 // Catálogo de autores cacheado en memoria (mismo espíritu de caché-
 // prototipo que services/lemas.ts): al no depender ya de que el usuario
 // escriba los nombres con mayúscula, comparar contra el catálogo entero
@@ -196,9 +240,13 @@ async function cargarAutores(): Promise<AutorContexto[]> {
   return autoresCache;
 }
 
-async function buscarAutores(pregunta: string): Promise<AutorContexto[]> {
+async function buscarAutores(pregunta: string, knex: any): Promise<AutorConRevistas[]> {
   const catalogo = await cargarAutores();
-  return mejoresCoincidencias(pregunta, catalogo, (a) => a.nombre, TOP_AUTORES, autoresFrecuencias!);
+  const coincidencias = mejoresCoincidencias(pregunta, catalogo, (a) => a.nombre, TOP_AUTORES, autoresFrecuencias!);
+  if (coincidencias.length === 0) return [];
+
+  const revistasPorNombre = await revistasPorAutor(knex, coincidencias.map((a) => a.nombre));
+  return coincidencias.map((a) => ({ ...a, revistas: revistasPorNombre.get(a.nombre) ?? [] }));
 }
 
 interface EntidadContexto {
@@ -272,7 +320,7 @@ export default {
     const [articulos, revistas, autores, entidades, diccionario] = await Promise.all([
       buscarArticulos(knex, vectorLiteral),
       buscarRevistas(pregunta),
-      buscarAutores(pregunta),
+      buscarAutores(pregunta, knex),
       buscarEntidades(pregunta),
       buscarEnDiccionario(pregunta, TOP_DICCIONARIO),
     ]);
@@ -314,7 +362,9 @@ export default {
         fuentes.push({ id, tipo: 'autor', titulo: a.nombre, link: `/autores/${a.slug}`, fragmento: a.biografia });
         const fechas =
           a.anioNacimiento || a.anioFallecimiento ? ` (${a.anioNacimiento ?? '?'}-${a.anioFallecimiento ?? '?'})` : '';
-        bloques.push(`[${id}] ${a.nombre}${fechas}${a.biografia ? '\n' + a.biografia : ''}`);
+        const revistasAutor =
+          a.revistas.length > 0 ? `. Publicó en estas revistas del corpus: ${a.revistas.map((r) => r.titulo).join(', ')}` : '';
+        bloques.push(`[${id}] ${a.nombre}${fechas}${revistasAutor}${a.biografia ? '\n' + a.biografia : ''}`);
       });
     }
 
