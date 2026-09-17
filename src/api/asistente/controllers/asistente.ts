@@ -18,6 +18,17 @@ const TOP_DICCIONARIO = 4;
 
 const CONECTORES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y']);
 
+// Interrogativos y palabras frecuentes al inicio de una pregunta en
+// español, que aparecen capitalizadas solo por ir en mayúscula inicial de
+// frase — no son nombres propios. Sin este filtro, "¿Qué fue el
+// cubismo?" extraía "Qué" como candidato, cuya forma normalizada ("que")
+// es subcadena de "marqués" y contaminaba los resultados con entidades y
+// autores de apellido "Marqués de..." (encontrado al probar en producción).
+const INTERROGATIVOS = new Set([
+  'que', 'cual', 'cuales', 'quien', 'quienes', 'como', 'donde', 'cuando',
+  'cuanto', 'cuanta', 'cuantos', 'cuantas', 'cuyo', 'cuya', 'cuyos', 'cuyas',
+]);
+
 // Heurística de extracción de nombres propios de la pregunta del usuario
 // (secuencias de palabras capitalizadas, admitiendo conectores como "de"/
 // "del" en medio — "García de la Serna" — y palabras capitalizadas sueltas
@@ -40,7 +51,7 @@ function extraerCandidatos(texto: string): string[] {
       cerrar();
       continue;
     }
-    const esCapitalizado = /^[A-ZÁÉÍÓÚÑÜ]/.test(token);
+    const esCapitalizado = /^[A-ZÁÉÍÓÚÑÜ]/.test(token) && !INTERROGATIVOS.has(normalizarNombre(token));
     const esConector = CONECTORES.has(token.toLowerCase());
     if (esCapitalizado) {
       actual.push(token);
@@ -54,7 +65,9 @@ function extraerCandidatos(texto: string): string[] {
 
   for (const tokenRaw of tokens) {
     const token = tokenRaw.replace(/[.,;:!?¿¡"'()«»]/g, '');
-    if (/^[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}$/.test(token)) candidatos.push(token);
+    if (/^[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}$/.test(token) && !INTERROGATIVOS.has(normalizarNombre(token))) {
+      candidatos.push(token);
+    }
   }
 
   return [...new Set(candidatos)];
