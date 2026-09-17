@@ -11,6 +11,7 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { mejoresCoincidencias, construirFrecuencias } from './coincidencias';
 
 const RUTA_DICCIONARIO = join(process.cwd(), 'diccionarios', 'entradas_finales.json');
 
@@ -30,6 +31,7 @@ interface EntradaDiccionario {
 
 let entradasCache: EntradaDiccionario[] | null = null;
 let indicePorNombre: Map<string, EntradaDiccionario> | null = null;
+let frecuenciasCache: Map<string, number> | null = null;
 
 function cargar(): EntradaDiccionario[] {
   if (!entradasCache) {
@@ -39,15 +41,9 @@ function cargar(): EntradaDiccionario[] {
     for (const entrada of entradasCache) {
       indicePorNombre.set(entrada.nombre.toLowerCase(), entrada);
     }
+    frecuenciasCache = construirFrecuencias(entradasCache, (e) => e.nombre);
   }
   return entradasCache;
-}
-
-function normalizar(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase();
 }
 
 // Resuelve una remisión ("Ver: X") a su entrada canónica si existe.
@@ -59,35 +55,24 @@ function resolverRemision(entrada: EntradaDiccionario): EntradaDiccionario {
   return entrada;
 }
 
-// Busca entradas cuyo nombre contenga alguno de los candidatos extraídos
-// de la pregunta del usuario (coincidencia de subcadena, insensible a
-// mayúsculas y diacríticos). Puntúa cada coincidencia por la longitud del
-// candidato que la produjo (un apellido común de una sola palabra, p. ej.
-// "García", no debe ganarle a una coincidencia por el nombre completo,
-// p. ej. "Federico García Lorca") y devuelve las `limite` mejores,
-// resolviendo remisiones a su entrada canónica y descartando duplicados.
-export function buscarEnDiccionario(candidatos: string[], limite = 4): EntradaDiccionario[] {
+// Busca entradas cuyo nombre aparece completo en la pregunta del usuario
+// (ver services/coincidencias.ts — por palabras, no por mayúsculas ni
+// subcadena). Se piden más coincidencias de las necesarias porque resolver
+// remisiones y descartar duplicados (p. ej. dos entradas "Índice" de
+// ciudades distintas, o una remisión que apunta a una entrada ya
+// encontrada) puede reducir el recuento por debajo de `limite`.
+export function buscarEnDiccionario(pregunta: string, limite = 4): EntradaDiccionario[] {
   const entradas = cargar();
-  if (candidatos.length === 0) return [];
+  const candidatas = mejoresCoincidencias(pregunta, entradas, (e) => e.nombre, limite * 3, frecuenciasCache!);
 
-  const candidatosNorm = candidatos.map(normalizar);
   const vistos = new Set<string>();
-  const puntuadas: { entrada: EntradaDiccionario; score: number }[] = [];
-
-  for (const entrada of entradas) {
-    const nombreNorm = normalizar(entrada.nombre);
-    let score = 0;
-    for (const c of candidatosNorm) {
-      if (nombreNorm.includes(c) || c.includes(nombreNorm)) score = Math.max(score, c.length);
-    }
-    if (score === 0) continue;
-
+  const resultado: EntradaDiccionario[] = [];
+  for (const entrada of candidatas) {
     const resuelta = resolverRemision(entrada);
     if (vistos.has(resuelta.nombre)) continue;
     vistos.add(resuelta.nombre);
-    puntuadas.push({ entrada: resuelta, score });
+    resultado.push(resuelta);
+    if (resultado.length >= limite) break;
   }
-
-  puntuadas.sort((a, b) => b.score - a.score);
-  return puntuadas.slice(0, limite).map((p) => p.entrada);
+  return resultado;
 }

@@ -9,69 +9,13 @@
 import type { Context } from 'koa';
 import { getEmbedding, chatCompletion, type ChatMessage } from '../services/openai-client';
 import { buscarEnDiccionario } from '../services/diccionario-vanguardias';
+import { mejoresCoincidencias, construirFrecuencias } from '../services/coincidencias';
 
 const TOP_ARTICULOS = 6;
 const MIN_SIMILITUD_ARTICULOS = 0.35;
 const TOP_AUTORES = 4;
 const TOP_ENTIDADES = 4;
 const TOP_DICCIONARIO = 4;
-
-const CONECTORES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y']);
-
-// Interrogativos y palabras frecuentes al inicio de una pregunta en
-// español, que aparecen capitalizadas solo por ir en mayúscula inicial de
-// frase — no son nombres propios. Sin este filtro, "¿Qué fue el
-// cubismo?" extraía "Qué" como candidato, cuya forma normalizada ("que")
-// es subcadena de "marqués" y contaminaba los resultados con entidades y
-// autores de apellido "Marqués de..." (encontrado al probar en producción).
-const INTERROGATIVOS = new Set([
-  'que', 'cual', 'cuales', 'quien', 'quienes', 'como', 'donde', 'cuando',
-  'cuanto', 'cuanta', 'cuantos', 'cuantas', 'cuyo', 'cuya', 'cuyos', 'cuyas',
-]);
-
-// Heurística de extracción de nombres propios de la pregunta del usuario
-// (secuencias de palabras capitalizadas, admitiendo conectores como "de"/
-// "del" en medio — "García de la Serna" — y palabras capitalizadas sueltas
-// como candidato individual). En el mismo espíritu que el gazetteer de
-// scripts/prueba_entity_linking.js, pero sin desambiguación por LLM: aquí
-// solo sirve para acotar qué autores/entidades/diccionario consultar.
-function extraerCandidatos(texto: string): string[] {
-  const tokens = texto.split(/\s+/);
-  const candidatos: string[] = [];
-  let actual: string[] = [];
-
-  function cerrar() {
-    if (actual.length >= 2) candidatos.push(actual.join(' '));
-    actual = [];
-  }
-
-  for (const tokenRaw of tokens) {
-    const token = tokenRaw.replace(/[.,;:!?¿¡"'()«»]/g, '');
-    if (!token) {
-      cerrar();
-      continue;
-    }
-    const esCapitalizado = /^[A-ZÁÉÍÓÚÑÜ]/.test(token) && !INTERROGATIVOS.has(normalizarNombre(token));
-    const esConector = CONECTORES.has(token.toLowerCase());
-    if (esCapitalizado) {
-      actual.push(token);
-    } else if (esConector && actual.length > 0) {
-      actual.push(token.toLowerCase());
-    } else {
-      cerrar();
-    }
-  }
-  cerrar();
-
-  for (const tokenRaw of tokens) {
-    const token = tokenRaw.replace(/[.,;:!?¿¡"'()«»]/g, '');
-    if (/^[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,}$/.test(token) && !INTERROGATIVOS.has(normalizarNombre(token))) {
-      candidatos.push(token);
-    }
-  }
-
-  return [...new Set(candidatos)];
-}
 
 function recortar(texto: string, max: number): string {
   const limpio = texto.replace(/\s+/g, ' ').trim();
@@ -87,27 +31,6 @@ function extraerTextoBloques(blocks: unknown): string {
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function normalizarNombre(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase();
-}
-
-// Puntúa una coincidencia de nombre por la longitud del candidato que la
-// produjo, para que un apellido común de una sola palabra ("García") no
-// desplace a una coincidencia por el nombre completo ("Federico García
-// Lorca"). Mismo criterio que diccionario-vanguardias.ts.
-function puntuarCoincidencia(nombre: string, candidatos: string[]): number {
-  const nombreNorm = normalizarNombre(nombre);
-  let score = 0;
-  for (const c of candidatos) {
-    const cNorm = normalizarNombre(c);
-    if (nombreNorm.includes(cNorm) || cNorm.includes(nombreNorm)) score = Math.max(score, cNorm.length);
-  }
-  return score;
 }
 
 function fragmentoArticulo(texto: string | null): string {
@@ -197,28 +120,36 @@ interface AutorContexto {
   anioFallecimiento: number | null;
 }
 
-async function buscarAutores(candidatos: string[]): Promise<AutorContexto[]> {
-  if (candidatos.length === 0) return [];
-  const autores = await strapi.documents('api::author.author').findMany({
-    status: 'published',
-    filters: {
-      $or: candidatos.flatMap((c) => [
-        { nombre: { $containsi: c } },
-        { variantes_nombre: { $containsi: c } },
-      ]),
-    } as never,
-    fields: ['nombre', 'slug', 'biografia', 'anio_nacimiento', 'anio_fallecimiento'],
-  });
-  return (autores as any[])
-    .sort((a, b) => puntuarCoincidencia(b.nombre, candidatos) - puntuarCoincidencia(a.nombre, candidatos))
-    .slice(0, TOP_AUTORES)
-    .map((a) => ({
+// Catálogo de autores cacheado en memoria (mismo espíritu de caché-
+// prototipo que services/lemas.ts): al no depender ya de que el usuario
+// escriba los nombres con mayúscula, comparar contra el catálogo entero
+// es más simple y fiable que construir un filtro $containsi por candidato
+// extraído del texto — y de paso evita una consulta a Postgres en cada
+// pregunta salvo la primera del proceso.
+let autoresCache: AutorContexto[] | null = null;
+let autoresFrecuencias: Map<string, number> | null = null;
+
+async function cargarAutores(): Promise<AutorContexto[]> {
+  if (!autoresCache) {
+    const autores = await strapi.documents('api::author.author').findMany({
+      status: 'published',
+      fields: ['nombre', 'slug', 'biografia', 'anio_nacimiento', 'anio_fallecimiento'],
+    });
+    autoresCache = (autores as any[]).map((a) => ({
       nombre: a.nombre as string,
       slug: a.slug as string,
       biografia: recortar(extraerTextoBloques(a.biografia), 600),
       anioNacimiento: a.anio_nacimiento ?? null,
       anioFallecimiento: a.anio_fallecimiento ?? null,
     }));
+    autoresFrecuencias = construirFrecuencias(autoresCache, (a) => a.nombre);
+  }
+  return autoresCache;
+}
+
+async function buscarAutores(pregunta: string): Promise<AutorContexto[]> {
+  const catalogo = await cargarAutores();
+  return mejoresCoincidencias(pregunta, catalogo, (a) => a.nombre, TOP_AUTORES, autoresFrecuencias!);
 }
 
 interface EntidadContexto {
@@ -227,25 +158,32 @@ interface EntidadContexto {
   descripcion: string;
 }
 
-// Solo se citan menciones con estado "confirmada": la sesión 51 dejó
-// documentado que la confianza media/baja del pipeline de entity-linking
-// no es fiable, así que no debe usarse como contexto de un asistente que
-// cita sus fuentes como si fueran datos verificados.
-async function buscarEntidades(candidatos: string[]): Promise<EntidadContexto[]> {
-  if (candidatos.length === 0) return [];
-  const entidades = await strapi.documents('api::entidad-mencionada.entidad-mencionada').findMany({
-    status: 'published',
-    filters: { $or: candidatos.map((c) => ({ nombre: { $containsi: c } })) } as never,
-    fields: ['nombre', 'tipo', 'descripcion'],
-  });
-  return (entidades as any[])
-    .sort((a, b) => puntuarCoincidencia(b.nombre, candidatos) - puntuarCoincidencia(a.nombre, candidatos))
-    .slice(0, TOP_ENTIDADES)
-    .map((e) => ({
+// Mismo criterio de caché que cargarAutores(). Solo se cargan entidades
+// publicadas; el campo `descripcion` (biografía del diccionario de
+// vanguardias) ya viene resuelto desde la sesión 51, no hace falta volver
+// a consultar menciones/confianza aquí.
+let entidadesCache: EntidadContexto[] | null = null;
+let entidadesFrecuencias: Map<string, number> | null = null;
+
+async function cargarEntidades(): Promise<EntidadContexto[]> {
+  if (!entidadesCache) {
+    const entidades = await strapi.documents('api::entidad-mencionada.entidad-mencionada').findMany({
+      status: 'published',
+      fields: ['nombre', 'tipo', 'descripcion'],
+    });
+    entidadesCache = (entidades as any[]).map((e) => ({
       nombre: e.nombre as string,
       tipo: e.tipo as string,
       descripcion: recortar(e.descripcion ?? '', 600),
     }));
+    entidadesFrecuencias = construirFrecuencias(entidadesCache, (e) => e.nombre);
+  }
+  return entidadesCache;
+}
+
+async function buscarEntidades(pregunta: string): Promise<EntidadContexto[]> {
+  const catalogo = await cargarEntidades();
+  return mejoresCoincidencias(pregunta, catalogo, (e) => e.nombre, TOP_ENTIDADES, entidadesFrecuencias!);
 }
 
 interface Fuente {
@@ -279,15 +217,14 @@ export default {
       return ctx.internalServerError(`Error al generar embedding: ${msg}`);
     }
 
-    const candidatos = extraerCandidatos(pregunta);
     const knex = strapi.db.connection;
     const vectorLiteral = `[${queryVector.join(',')}]`;
 
     const [articulos, autores, entidades, diccionario] = await Promise.all([
       buscarArticulos(knex, vectorLiteral),
-      buscarAutores(candidatos),
-      buscarEntidades(candidatos),
-      buscarEnDiccionario(candidatos, TOP_DICCIONARIO),
+      buscarAutores(pregunta),
+      buscarEntidades(pregunta),
+      buscarEnDiccionario(pregunta, TOP_DICCIONARIO),
     ]);
 
     const fuentes: Fuente[] = [];
