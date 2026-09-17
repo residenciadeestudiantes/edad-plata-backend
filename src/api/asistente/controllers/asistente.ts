@@ -386,14 +386,25 @@ export default {
         fuentes.push({ id, tipo: 'autor', titulo: a.nombre, link: `/autores/${a.slug}`, fragmento: a.biografia });
         const fechas =
           a.anioNacimiento || a.anioFallecimiento ? ` (${a.anioNacimiento ?? '?'}-${a.anioFallecimiento ?? '?'})` : '';
-        const revistasAutor = a.revistas.length > 0 ? `. Publicó en estas revistas del corpus: ${a.revistas.join(', ')}` : '';
+        // El número de revistas/artículos se calcula aquí y se da ya hecho
+        // en el texto (no una lista para que el modelo la cuente): probado
+        // que un modelo de lenguaje cuenta mal listas largas — preguntado
+        // "¿en cuántas revistas escribió...?" con 18 revistas reales en el
+        // contexto, respondió "14" contándolas él mismo a partir de la
+        // lista separada por comas.
+        const revistasAutor =
+          a.revistas.length > 0
+            ? `. Publicó en un total de ${a.revistas.length} revistas del corpus: ${a.revistas.join(', ')}`
+            : '';
         const articulosMostrados = a.articulos.slice(0, MAX_ARTICULOS_POR_AUTOR);
         const restantes = a.articulos.length - articulosMostrados.length;
         const listaArticulos =
           articulosMostrados.length > 0
-            ? `\nArtículos del corpus firmados por ${a.nombre} (título — revista, año):\n` +
+            ? `\n${a.nombre} tiene un total de ${a.articulos.length} artículos del corpus firmados (título — revista, año):\n` +
               articulosMostrados.map((art) => `- "${art.titulo}" — ${art.revista}, ${art.anio ?? 'año desconocido'}`).join('\n') +
-              (restantes > 0 ? `\n… y ${restantes} artículo(s) más.` : '')
+              (restantes > 0
+                ? `\n… y ${restantes} artículo(s) más no listados aquí por espacio (el total real, ya contado arriba, es ${a.articulos.length}).`
+                : '')
             : '';
         bloques.push(`[${id}] ${a.nombre}${fechas}${revistasAutor}${a.biografia ? '\n' + a.biografia : ''}${listaArticulos}`);
       });
@@ -463,6 +474,7 @@ INSTRUCCIONES ESTRICTAS:
 - Cuando uses un dato del contexto, cita su identificador entre corchetes, por ejemplo: "García Lorca colaboró con la Residencia de Estudiantes [AU1]."
 - Usa la frase "No tengo información suficiente en el corpus para responder a esto." ÚNICAMENTE cuando el contexto no contenga NADA relacionado con la pregunta. No la uses como respuesta por defecto cuando falte un detalle concreto (un año, una cifra) pero sí haya en el contexto datos relacionados sobre el mismo autor, revista o tema: en ese caso, indica primero que ese dato exacto no aparece y, a continuación, ofrece los datos relacionados que sí tienes (p. ej. si preguntan por artículos de un autor en un año que no está, pero el contexto trae sus artículos de otros años, responde con esos años y aclara que ese año en concreto no consta). No inventes ni compenses con conocimiento externo en ningún caso.
 - Responde en español, en un tono claro y accesible, sin tecnicismos innecesarios.
+- Si preguntan cuántas revistas, artículos u otros elementos hay, y el contexto ya da ese número explícitamente ("un total de N..."), usa ese número tal cual. No cuentes tú los elementos de una lista del contexto: contar mal listas largas es un error frecuente y ese número ya está calculado para ti.
 
 CONTEXTO:
 ${contexto}`;
