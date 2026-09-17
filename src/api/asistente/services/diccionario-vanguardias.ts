@@ -61,7 +61,10 @@ function resolverRemision(entrada: EntradaDiccionario): EntradaDiccionario {
 
 // Busca entradas cuyo nombre contenga alguno de los candidatos extraídos
 // de la pregunta del usuario (coincidencia de subcadena, insensible a
-// mayúsculas y diacríticos). Devuelve como máximo `limite` entradas,
+// mayúsculas y diacríticos). Puntúa cada coincidencia por la longitud del
+// candidato que la produjo (un apellido común de una sola palabra, p. ej.
+// "García", no debe ganarle a una coincidencia por el nombre completo,
+// p. ej. "Federico García Lorca") y devuelve las `limite` mejores,
 // resolviendo remisiones a su entrada canónica y descartando duplicados.
 export function buscarEnDiccionario(candidatos: string[], limite = 4): EntradaDiccionario[] {
   const entradas = cargar();
@@ -69,18 +72,22 @@ export function buscarEnDiccionario(candidatos: string[], limite = 4): EntradaDi
 
   const candidatosNorm = candidatos.map(normalizar);
   const vistos = new Set<string>();
-  const resultado: EntradaDiccionario[] = [];
+  const puntuadas: { entrada: EntradaDiccionario; score: number }[] = [];
 
   for (const entrada of entradas) {
     const nombreNorm = normalizar(entrada.nombre);
-    if (!candidatosNorm.some((c) => nombreNorm.includes(c) || c.includes(nombreNorm))) continue;
+    let score = 0;
+    for (const c of candidatosNorm) {
+      if (nombreNorm.includes(c) || c.includes(nombreNorm)) score = Math.max(score, c.length);
+    }
+    if (score === 0) continue;
 
     const resuelta = resolverRemision(entrada);
     if (vistos.has(resuelta.nombre)) continue;
     vistos.add(resuelta.nombre);
-    resultado.push(resuelta);
-    if (resultado.length >= limite) break;
+    puntuadas.push({ entrada: resuelta, score });
   }
 
-  return resultado;
+  puntuadas.sort((a, b) => b.score - a.score);
+  return puntuadas.slice(0, limite).map((p) => p.entrada);
 }

@@ -76,6 +76,27 @@ function extraerTextoBloques(blocks: unknown): string {
     .trim();
 }
 
+function normalizarNombre(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+
+// Puntúa una coincidencia de nombre por la longitud del candidato que la
+// produjo, para que un apellido común de una sola palabra ("García") no
+// desplace a una coincidencia por el nombre completo ("Federico García
+// Lorca"). Mismo criterio que diccionario-vanguardias.ts.
+function puntuarCoincidencia(nombre: string, candidatos: string[]): number {
+  const nombreNorm = normalizarNombre(nombre);
+  let score = 0;
+  for (const c of candidatos) {
+    const cNorm = normalizarNombre(c);
+    if (nombreNorm.includes(cNorm) || cNorm.includes(nombreNorm)) score = Math.max(score, cNorm.length);
+  }
+  return score;
+}
+
 function fragmentoArticulo(texto: string | null): string {
   if (!texto) return '';
   const limpio = texto
@@ -175,13 +196,16 @@ async function buscarAutores(candidatos: string[]): Promise<AutorContexto[]> {
     } as never,
     fields: ['nombre', 'slug', 'biografia', 'anio_nacimiento', 'anio_fallecimiento'],
   });
-  return (autores as any[]).slice(0, TOP_AUTORES).map((a) => ({
-    nombre: a.nombre as string,
-    slug: a.slug as string,
-    biografia: recortar(extraerTextoBloques(a.biografia), 600),
-    anioNacimiento: a.anio_nacimiento ?? null,
-    anioFallecimiento: a.anio_fallecimiento ?? null,
-  }));
+  return (autores as any[])
+    .sort((a, b) => puntuarCoincidencia(b.nombre, candidatos) - puntuarCoincidencia(a.nombre, candidatos))
+    .slice(0, TOP_AUTORES)
+    .map((a) => ({
+      nombre: a.nombre as string,
+      slug: a.slug as string,
+      biografia: recortar(extraerTextoBloques(a.biografia), 600),
+      anioNacimiento: a.anio_nacimiento ?? null,
+      anioFallecimiento: a.anio_fallecimiento ?? null,
+    }));
 }
 
 interface EntidadContexto {
@@ -201,11 +225,14 @@ async function buscarEntidades(candidatos: string[]): Promise<EntidadContexto[]>
     filters: { $or: candidatos.map((c) => ({ nombre: { $containsi: c } })) } as never,
     fields: ['nombre', 'tipo', 'descripcion'],
   });
-  return (entidades as any[]).slice(0, TOP_ENTIDADES).map((e) => ({
-    nombre: e.nombre as string,
-    tipo: e.tipo as string,
-    descripcion: recortar(e.descripcion ?? '', 600),
-  }));
+  return (entidades as any[])
+    .sort((a, b) => puntuarCoincidencia(b.nombre, candidatos) - puntuarCoincidencia(a.nombre, candidatos))
+    .slice(0, TOP_ENTIDADES)
+    .map((e) => ({
+      nombre: e.nombre as string,
+      tipo: e.tipo as string,
+      descripcion: recortar(e.descripcion ?? '', 600),
+    }));
 }
 
 interface Fuente {
