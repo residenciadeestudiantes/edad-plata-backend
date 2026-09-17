@@ -1,8 +1,8 @@
 // Asistente conversacional (RAG): responde preguntas sobre el corpus
 // combinando búsqueda semántica de artículos (mismo patrón pgvector que
-// /api/buscar/semantico) con búsqueda por nombre sobre autores, entidades
-// mencionadas (persona/lugar/institucion/obra, ver sesión 51) y el
-// diccionario biográfico de vanguardias completo (services/diccionario-
+// /api/buscar/semantico) con búsqueda por nombre sobre revistas, autores,
+// entidades mencionadas (persona/lugar/institucion/obra, ver sesión 51) y
+// el diccionario biográfico de vanguardias completo (services/diccionario-
 // vanguardias.ts). Solo accesible con rol Authenticated (ver routes/
 // asistente.ts y sembrarPermisosAuthenticated en src/index.ts).
 
@@ -13,6 +13,7 @@ import { mejoresCoincidencias, construirFrecuencias } from '../services/coincide
 
 const TOP_ARTICULOS = 6;
 const MIN_SIMILITUD_ARTICULOS = 0.35;
+const TOP_REVISTAS = 3;
 const TOP_AUTORES = 4;
 const TOP_ENTIDADES = 4;
 const TOP_DICCIONARIO = 4;
@@ -112,6 +113,54 @@ async function buscarArticulos(knex: any, vectorLiteral: string): Promise<Articu
   }));
 }
 
+interface RevistaContexto {
+  titulo: string;
+  slug: string;
+  descripcion: string;
+  anioInicio: number | null;
+  anioFin: number | null;
+  lugarPublicacion: string | null;
+  periodicidad: string | null;
+  numerosPublicados: number | null;
+  directores: string[];
+}
+
+// Mismo criterio de caché que cargarAutores(): el catálogo de revistas es
+// pequeño (unas pocas decenas), cabe entero en memoria.
+let revistasCache: RevistaContexto[] | null = null;
+let revistasFrecuencias: Map<string, number> | null = null;
+
+async function cargarRevistas(): Promise<RevistaContexto[]> {
+  if (!revistasCache) {
+    const revistas = await strapi.documents('api::publication.publication').findMany({
+      status: 'published',
+      fields: [
+        'titulo', 'slug', 'descripcion', 'año_inicio', 'año_fin',
+        'lugar_publicacion', 'periodicidad', 'numeros_publicados',
+      ],
+      populate: { directores: { fields: ['nombre'] } },
+    });
+    revistasCache = (revistas as any[]).map((r) => ({
+      titulo: r.titulo as string,
+      slug: r.slug as string,
+      descripcion: recortar(extraerTextoBloques(r.descripcion), 600),
+      anioInicio: r.año_inicio ?? null,
+      anioFin: r.año_fin ?? null,
+      lugarPublicacion: r.lugar_publicacion ?? null,
+      periodicidad: r.periodicidad ?? null,
+      numerosPublicados: r.numeros_publicados ?? null,
+      directores: (r.directores ?? []).map((d: any) => d.nombre as string),
+    }));
+    revistasFrecuencias = construirFrecuencias(revistasCache, (r) => r.titulo);
+  }
+  return revistasCache;
+}
+
+async function buscarRevistas(pregunta: string): Promise<RevistaContexto[]> {
+  const catalogo = await cargarRevistas();
+  return mejoresCoincidencias(pregunta, catalogo, (r) => r.titulo, TOP_REVISTAS, revistasFrecuencias!);
+}
+
 interface AutorContexto {
   nombre: string;
   slug: string;
@@ -188,7 +237,7 @@ async function buscarEntidades(pregunta: string): Promise<EntidadContexto[]> {
 
 interface Fuente {
   id: string;
-  tipo: 'articulo' | 'autor' | 'entidad' | 'diccionario';
+  tipo: 'articulo' | 'revista' | 'autor' | 'entidad' | 'diccionario';
   titulo: string;
   link: string | null;
   fragmento: string;
@@ -220,8 +269,9 @@ export default {
     const knex = strapi.db.connection;
     const vectorLiteral = `[${queryVector.join(',')}]`;
 
-    const [articulos, autores, entidades, diccionario] = await Promise.all([
+    const [articulos, revistas, autores, entidades, diccionario] = await Promise.all([
       buscarArticulos(knex, vectorLiteral),
+      buscarRevistas(pregunta),
       buscarAutores(pregunta),
       buscarEntidades(pregunta),
       buscarEnDiccionario(pregunta, TOP_DICCIONARIO),
@@ -237,6 +287,22 @@ export default {
         fuentes.push({ id, tipo: 'articulo', titulo: a.titulo, link: `/articulos/${a.slug}`, fragmento: a.fragmento });
         bloques.push(
           `[${id}] "${a.titulo}" — ${a.autores.join(', ') || 'autor desconocido'}, ${a.revista} n.º ${a.numeroOrden ?? '?'} (${a.anio ?? '?'})\n${a.fragmento}`
+        );
+      });
+    }
+
+    if (revistas.length > 0) {
+      bloques.push('\nREVISTAS:');
+      revistas.forEach((r, i) => {
+        const id = `R${i + 1}`;
+        fuentes.push({ id, tipo: 'revista', titulo: r.titulo, link: `/revistas/${r.slug}`, fragmento: r.descripcion });
+        const fechas = r.anioInicio || r.anioFin ? ` (${r.anioInicio ?? '?'}-${r.anioFin ?? '?'})` : '';
+        const lugar = r.lugarPublicacion ? `, ${r.lugarPublicacion}` : '';
+        const directores = r.directores.length > 0 ? `. Dirigida por: ${r.directores.join(', ')}` : '';
+        const periodicidad = r.periodicidad ? `. Periodicidad: ${r.periodicidad}` : '';
+        const numeros = r.numerosPublicados != null ? `. ${r.numerosPublicados} números publicados` : '';
+        bloques.push(
+          `[${id}] ${r.titulo}${fechas}${lugar}${directores}${periodicidad}${numeros}${r.descripcion ? '\n' + r.descripcion : ''}`
         );
       });
     }
