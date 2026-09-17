@@ -133,20 +133,41 @@ function umbralErrata(longitud: number): number {
   return 0;
 }
 
+// Palabras con mayúscula inicial en el texto ORIGINAL (antes de
+// normalizar) y de longitud ≥4: a diferencia de mejoresCoincidencias, que
+// deliberadamente no depende de mayúsculas, esta red de seguridad sí las
+// exige — es la única señal barata para distinguir "esto podría ser un
+// nombre propio mal escrito" de una palabra común cualquiera. Sin este
+// filtro, una pregunta sin ningún nombre propio (p. ej. buscar una frase
+// literal: "...se han visto luces, puentes, gaviotas y barcazas...")
+// encontraba por casualidad candidatos como "barcazas"→"Barradas" o
+// "puentes"→"Puente" y sugería personas sin relación alguna con la
+// pregunta (encontrado probando en producción).
+function palabrasCapitalizadas(texto: string): string[] {
+  return texto
+    .replace(/[^\p{L}0-9]+/gu, ' ')
+    .trim()
+    .split(' ')
+    .filter((w) => /^[A-ZÁÉÍÓÚÑÜ]/.test(w))
+    .map(normalizarTexto)
+    .filter((w) => w.length >= 4 && !STOPWORDS.has(w));
+}
+
 // Ni sinónimo ni variante: candidatos a "quisiste decir" cuando la
-// pregunta NO tuvo ninguna coincidencia exacta en ningún catálogo (ver
-// controllers/asistente.ts). No sustituye a mejoresCoincidencias — se usa
-// solo como red de seguridad para sugerir, nunca para dar por buena una
-// entrada con una errata como si fuera la que el usuario pidió: así se
-// evita el mismo tipo de falso positivo que ya costó corregir dos veces
-// en la búsqueda exacta (ver cabecera del archivo).
+// pregunta NO tuvo ninguna coincidencia exacta en ningún catálogo NI
+// ningún artículo relevante (ver controllers/asistente.ts). No sustituye
+// a mejoresCoincidencias — se usa solo como red de seguridad para
+// sugerir, nunca para dar por buena una entrada con una errata como si
+// fuera la que el usuario pidió: así se evita el mismo tipo de falso
+// positivo que ya costó corregir dos veces en la búsqueda exacta (ver
+// cabecera del archivo).
 export function sugerenciasPorErrata<T>(
   pregunta: string,
   catalogo: T[],
   obtenerNombre: (item: T) => string,
   limite: number
 ): T[] {
-  const palabrasPregunta = palabrasSignificativas(pregunta).filter((w) => w.length >= 4);
+  const palabrasPregunta = palabrasCapitalizadas(pregunta);
   if (palabrasPregunta.length === 0) return [];
 
   const candidatos: { item: T; dist: number }[] = [];

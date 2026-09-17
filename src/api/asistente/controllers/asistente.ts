@@ -432,14 +432,28 @@ export default {
     // Red de seguridad para erratas en nombres propios: la comparación por
     // palabras (services/coincidencias.ts) es exacta a propósito, para no
     // reintroducir el ruido que ya costó corregir dos veces (ver commits
-    // anteriores). Si NINGUNA fuente por nombre encontró nada, se busca
-    // aparte por distancia de edición y, si hay candidatos razonables, se
-    // responde directamente "¿Te refieres a...?" SIN pasar por el modelo:
-    // probado que una nota de contexto pidiéndoselo al modelo no se seguía
-    // de forma fiable (seguía respondiendo solo que no tenía información),
-    // así que para esta decisión puramente mecánica es más fiable —y más
-    // barato— construir la respuesta de forma determinista.
-    if (revistas.length === 0 && autores.length === 0 && entidades.length === 0 && diccionario.length === 0) {
+    // anteriores). Si NINGUNA fuente encontró nada —incluidos los
+    // artículos— se busca aparte por distancia de edición y, si hay
+    // candidatos razonables, se responde directamente "¿Te refieres a...?"
+    // SIN pasar por el modelo: probado que una nota de contexto
+    // pidiéndoselo al modelo no se seguía de forma fiable (seguía
+    // respondiendo solo que no tenía información), así que para esta
+    // decisión puramente mecánica es más fiable —y más barato— construir
+    // la respuesta de forma determinista.
+    //
+    // Se exige también articulos.length === 0: probado con una búsqueda de
+    // frase literal ("en qué artículo aparece esta frase...", sin ningún
+    // nombre propio real) que, si ya hay artículos relevantes por búsqueda
+    // semántica, no tiene sentido sugerir personas al azar solo porque
+    // ninguna fuente por nombre encontró nada — hay que dejar responder
+    // con lo que sí se encontró.
+    if (
+      articulos.length === 0 &&
+      revistas.length === 0 &&
+      autores.length === 0 &&
+      entidades.length === 0 &&
+      diccionario.length === 0
+    ) {
       const [autoresCat, entidadesCat, revistasCat] = await Promise.all([
         cargarAutores(),
         cargarEntidades(),
