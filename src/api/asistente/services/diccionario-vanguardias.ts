@@ -11,11 +11,11 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { mejoresCoincidencias, construirFrecuencias } from './coincidencias';
+import { mejoresCoincidencias, construirFrecuencias, sugerenciasPorErrata } from './coincidencias';
 
 const RUTA_DICCIONARIO = join(process.cwd(), 'diccionarios', 'entradas_finales.json');
 
-interface EntradaDiccionario {
+export interface EntradaDiccionario {
   nombre: string;
   tipo: 'persona' | 'lugar' | 'publicacion' | 'colectivo' | 'movimiento' | 'remision';
   texto?: string;
@@ -75,4 +75,11 @@ export function buscarEnDiccionario(pregunta: string, limite = 4): EntradaDiccio
     if (resultado.length >= limite) break;
   }
   return resultado;
+}
+
+// Red de seguridad por si el nombre lleva una errata (ver
+// services/coincidencias.ts): solo se llama cuando buscarEnDiccionario y
+// el resto de fuentes por nombre no han encontrado nada exacto.
+export function sugerenciasEnDiccionario(pregunta: string, limite = 2): EntradaDiccionario[] {
+  return sugerenciasPorErrata(pregunta, cargar(), (e) => e.nombre, limite);
 }

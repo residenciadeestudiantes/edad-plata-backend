@@ -8,8 +8,8 @@
 
 import type { Context } from 'koa';
 import { getEmbedding, chatCompletion, type ChatMessage } from '../services/openai-client';
-import { buscarEnDiccionario } from '../services/diccionario-vanguardias';
-import { mejoresCoincidencias, construirFrecuencias } from '../services/coincidencias';
+import { buscarEnDiccionario, sugerenciasEnDiccionario } from '../services/diccionario-vanguardias';
+import { mejoresCoincidencias, construirFrecuencias, sugerenciasPorErrata } from '../services/coincidencias';
 
 const TOP_ARTICULOS = 6;
 const MIN_SIMILITUD_ARTICULOS = 0.35;
@@ -416,6 +416,34 @@ export default {
         fuentes.push({ id, tipo: 'diccionario', titulo: d.nombre, link: null, fragmento: texto });
         bloques.push(`[${id}] ${d.nombre} (${d.tipo})${texto ? '\n' + texto : ''}`);
       });
+    }
+
+    // Red de seguridad para erratas en nombres propios: la comparación por
+    // palabras (services/coincidencias.ts) es exacta a propósito, para no
+    // reintroducir el ruido que ya costó corregir dos veces (ver commits
+    // anteriores). Si NINGUNA fuente por nombre encontró nada, se busca
+    // aparte por distancia de edición y, si hay candidatos razonables, se
+    // le pide al modelo que pregunte "¿Te refieres a...?" en vez de
+    // asumirlos como buenos o descartarlos sin más — decisión del usuario,
+    // no del sistema.
+    if (revistas.length === 0 && autores.length === 0 && entidades.length === 0 && diccionario.length === 0) {
+      const [autoresCat, entidadesCat, revistasCat] = await Promise.all([
+        cargarAutores(),
+        cargarEntidades(),
+        cargarRevistas(),
+      ]);
+      const nombresSugeridos = [
+        ...sugerenciasPorErrata(pregunta, autoresCat, (a) => a.nombre, 2).map((a) => a.nombre),
+        ...sugerenciasPorErrata(pregunta, entidadesCat, (e) => e.nombre, 2).map((e) => e.nombre),
+        ...sugerenciasPorErrata(pregunta, revistasCat, (r) => r.titulo, 2).map((r) => r.titulo),
+        ...sugerenciasEnDiccionario(pregunta, 2).map((d) => d.nombre),
+      ];
+
+      if (nombresSugeridos.length > 0) {
+        bloques.push(
+          `\nPOSIBLE ERRATA: no se ha encontrado en el corpus ningún autor, entidad, revista o entrada del diccionario con un nombre exactamente igual al de la pregunta, pero estos nombres del catálogo son muy parecidos y podrían ser lo que el usuario quiso escribir: ${nombresSugeridos.join(', ')}. Si crees que se trata de una errata de tecleo, pregunta explícitamente algo como "¿Te refieres a X?" citando el nombre o los nombres más probables, en vez de responder solo que no tienes información.`
+        );
+      }
     }
 
     const contexto = bloques.join('\n\n') || '(No se ha encontrado contexto relevante en el corpus para esta pregunta.)';

@@ -100,3 +100,69 @@ export function mejoresCoincidencias<T>(
   puntuadas.sort((a, b) => b.score - a.score);
   return puntuadas.slice(0, limite).map((p) => p.item);
 }
+
+// Distancia de edición entre dos palabras ya normalizadas (Levenshtein +
+// transposición de letras adyacentes contando como 1 solo cambio, no 2 —
+// variante "optimal string alignment" de Damerau-Levenshtein). Sin la
+// transposición, una errata tan común como "Lroca" por "Lorca" cuesta 2 y
+// queda fuera del umbral de una palabra de 5 letras, y no se sugiere nada.
+function distanciaEdicion(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const costo = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + costo);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        dp[i][j] = Math.min(dp[i][j], dp[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+// Cuántas letras de diferencia se toleran como probable errata, según la
+// longitud de la palabra — cuanto más corta, menos margen (una palabra de
+// 4 letras con distancia 2 ya es prácticamente otra palabra).
+function umbralErrata(longitud: number): number {
+  if (longitud >= 8) return 2;
+  if (longitud >= 4) return 1;
+  return 0;
+}
+
+// Ni sinónimo ni variante: candidatos a "quisiste decir" cuando la
+// pregunta NO tuvo ninguna coincidencia exacta en ningún catálogo (ver
+// controllers/asistente.ts). No sustituye a mejoresCoincidencias — se usa
+// solo como red de seguridad para sugerir, nunca para dar por buena una
+// entrada con una errata como si fuera la que el usuario pidió: así se
+// evita el mismo tipo de falso positivo que ya costó corregir dos veces
+// en la búsqueda exacta (ver cabecera del archivo).
+export function sugerenciasPorErrata<T>(
+  pregunta: string,
+  catalogo: T[],
+  obtenerNombre: (item: T) => string,
+  limite: number
+): T[] {
+  const palabrasPregunta = palabrasSignificativas(pregunta).filter((w) => w.length >= 4);
+  if (palabrasPregunta.length === 0) return [];
+
+  const candidatos: { item: T; dist: number }[] = [];
+  for (const item of catalogo) {
+    const palabrasNombre = palabrasSignificativas(obtenerNombre(item)).filter((w) => w.length >= 4);
+    let mejorDist = Infinity;
+    for (const pw of palabrasPregunta) {
+      for (const nw of palabrasNombre) {
+        if (Math.abs(pw.length - nw.length) > umbralErrata(Math.max(pw.length, nw.length))) continue;
+        const d = distanciaEdicion(pw, nw);
+        if (d > 0 && d <= umbralErrata(Math.max(pw.length, nw.length)) && d < mejorDist) mejorDist = d;
+      }
+    }
+    if (mejorDist < Infinity) candidatos.push({ item, dist: mejorDist });
+  }
+
+  candidatos.sort((a, b) => a.dist - b.dist);
+  return candidatos.slice(0, limite).map((c) => c.item);
+}
